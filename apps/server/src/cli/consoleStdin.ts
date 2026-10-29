@@ -54,6 +54,18 @@ export function attachConsoleStdin(): number | undefined {
     return undefined;
   }
   const stdin = new NodeTty.ReadStream(fd);
+  // Like Node's built-in stdin, release pending console reads before a child takes over.
+  stdin.on("pause", () => {
+    const internal = stdin as unknown as {
+      _handle?: { reading: boolean; readStop(): void };
+      _readableState: { reading: boolean };
+    };
+    const handle = internal._handle;
+    if (!handle) return;
+    internal._readableState.reading = false;
+    handle.reading = false;
+    handle.readStop();
+  });
   Object.defineProperty(process, "stdin", { value: stdin, configurable: true, enumerable: true });
   consoleStdinFd = fd;
   return fd;

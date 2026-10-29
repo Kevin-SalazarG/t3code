@@ -9,12 +9,20 @@ const io = vi.hoisted(() => ({
 }));
 
 vi.mock("node:fs", () => ({ fstatSync: io.stat, openSync: io.open, closeSync: io.close }));
-vi.mock("node:tty", () => ({
-  isatty: io.isatty,
-  ReadStream: class {
-    readonly isTTY = true;
-  },
-}));
+vi.mock("node:tty", async () => {
+  const { EventEmitter } = await import("node:events");
+  return {
+    isatty: io.isatty,
+    ReadStream: class extends EventEmitter {
+      readonly isTTY = true;
+      readonly _readableState = { reading: true };
+      _handle: { reading: boolean; readStop: () => void } | undefined = {
+        reading: true,
+        readStop: vi.fn(),
+      };
+    },
+  };
+});
 vi.mock("@t3tools/shared/HostProcess", () => ({ Platform: { defaultValue: io.platform } }));
 
 const originalStdin = Object.getOwnPropertyDescriptor(process, "stdin")!;
@@ -38,6 +46,32 @@ describe("attachConsoleStdin", () => {
     expect(process.stdin.isTTY).toBe(true);
     expect(interactiveStdin()).toBe(42);
     expect(process.env.T3CODE_DESKTOP_CLI_LAUNCHER).toBeUndefined();
+  });
+
+  it("releases console reads when the picker pauses stdin before launching an agent", async () => {
+    const { attachConsoleStdin, interactiveStdin } = await import("./consoleStdin.ts");
+    attachConsoleStdin();
+    const stdin = process.stdin as unknown as {
+      emit(event: string): boolean;
+      _readableState: { reading: boolean };
+      _handle: { reading: boolean; readStop: () => void };
+    };
+    stdin.emit("pause");
+    expect(stdin._readableState.reading).toBe(false);
+    expect(stdin._handle.reading).toBe(false);
+    expect(stdin._handle.readStop).toHaveBeenCalledOnce();
+    expect(interactiveStdin()).toBe(42);
+  });
+
+  it("can pause after the reopened stream's handle has been closed", async () => {
+    const { attachConsoleStdin } = await import("./consoleStdin.ts");
+    attachConsoleStdin();
+    const stdin = process.stdin as unknown as {
+      emit(event: string): boolean;
+      _handle: undefined;
+    };
+    stdin._handle = undefined;
+    expect(() => stdin.emit("pause")).not.toThrow();
   });
 
   it("still reopens a closed stdin", async () => {
