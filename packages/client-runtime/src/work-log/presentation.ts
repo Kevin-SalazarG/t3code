@@ -22,6 +22,7 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
+import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 
 import {
   summarizeT3ToolCalls,
@@ -456,6 +457,30 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   }
 }
 
+const MAX_LISTED_COMMAND_PROGRAMS = 3;
+
+/** "Ran 3 commands" says nothing; naming the programs ("git, pnpm") says what happened. */
+function withCommandPrograms(
+  label: string,
+  action: ToolGroupAction,
+  entries: ReadonlyArray<WorkLogPresentationEntry>,
+): string {
+  if (action !== "command") return label;
+  const programs = [
+    ...new Set(
+      entries.flatMap((entry) => {
+        const command = entry.rawCommand ?? entry.command;
+        const program = command ? commandProgramName(command) : null;
+        return program ? [program] : [];
+      }),
+    ),
+  ];
+  if (programs.length === 0) return label;
+  const listed = programs.slice(0, MAX_LISTED_COMMAND_PROGRAMS).join(", ");
+  const more = programs.length > MAX_LISTED_COMMAND_PROGRAMS ? ", …" : "";
+  return `${label} (${listed}${more})`;
+}
+
 function t3ToolSummaryCall(entry: WorkLogPresentationEntry): T3ToolSummaryCall {
   return {
     input: workEntryToolInput(entry),
@@ -557,9 +582,10 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
     ...(group.t3Action
       ? summarizeT3ToolCalls(group.t3Action, group.entries.map(t3ToolSummaryCall))
       : {
-          label: toolGroupActionLabel(
+          label: withCommandPrograms(
+            toolGroupActionLabel(group.action, toolGroupActionCount(group.action, group.entries)),
             group.action,
-            toolGroupActionCount(group.action, group.entries),
+            group.entries,
           ),
           failedCount: group.entries.filter(workEntryDisplayIndicatesToolFailure).length,
         }),

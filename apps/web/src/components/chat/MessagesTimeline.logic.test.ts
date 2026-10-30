@@ -3086,6 +3086,8 @@ it.each([
     createdAt: "2026-01-01T00:00:00Z",
     label: "Worked for 1m",
     expanded: true,
+    stepCount: null,
+    diffStat: null,
     ...(before === undefined ? {} : { deferredWorkItemIds: before }),
   };
   const previous = computeStableMessagesTimelineRows([row], { result: [], byId: new Map() });

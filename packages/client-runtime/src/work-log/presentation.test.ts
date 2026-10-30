@@ -5,6 +5,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   resolveWorkEntryToolPresentation,
+  summarizeToolGroup,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
   workEntryIndicatesToolFailure,
@@ -187,5 +188,30 @@ describe("resolveWorkEntryToolPresentation", () => {
         toolData: { server: "another-server", tool: "preview_click" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("summarizeToolGroup", () => {
+  const command = (id: string, rawCommand: string): WorkLogPresentationEntry => ({
+    id,
+    createdAt: "2026-09-08T00:00:00.000Z",
+    label: "Ran command",
+    tone: "tool",
+    itemType: "command_execution",
+    rawCommand,
+  });
+
+  it("names the distinct programs a command group ran", () => {
+    expect(
+      summarizeToolGroup([
+        command("1", "git status"),
+        command("2", "pnpm test"),
+        command("3", "git diff"),
+      ]).summary,
+    ).toBe("Ran 3 commands (git, pnpm)");
+    expect(
+      summarizeToolGroup(["git a", "pnpm b", "rg c", "sed d"].map((c, i) => command(`${i}`, c)))
+        .summary,
+    ).toBe("Ran 4 commands (git, pnpm, rg, …)");
   });
 });

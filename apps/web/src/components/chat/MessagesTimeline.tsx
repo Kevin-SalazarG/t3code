@@ -102,6 +102,7 @@ import {
   type WorkGroupViewState,
   type TimelineRow,
 } from "./timelineRowContext";
+import { DiffStatLabel } from "./DiffStatLabel";
 import { TimelineRowTimestamp, ActivityShimmerOverlay } from "./TimelineRowParts";
 import {
   WorkGroupSection,
@@ -1645,8 +1646,19 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         >
           <span>
             {row.label}
+            {row.stepCount !== null
+              ? ` · ${row.stepCount} ${row.stepCount === 1 ? "step" : "steps"}`
+              : ""}
             {error ? ` · ${error}` : ""}
           </span>
+          {row.diffStat ? (
+            <DiffStatLabel
+              additions={row.diffStat.additions}
+              deletions={row.diffStat.deletions}
+              layout="inline"
+              className="text-xs"
+            />
+          ) : null}
           <MorphIcon className="size-3.5" icon={row.expanded ? ChevronDown : ChevronRight} />
         </button>
         <TimelineRowTimestamp

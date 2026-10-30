@@ -41,12 +41,15 @@ import {
   threadReadTargetId,
   threadReadTargetTitle,
   workEntryDisplayLabel,
+  workEntryFileTarget,
   workEntryReadOutput,
 } from "./MessagesTimeline.logic";
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { FetchedToolOutput, V2ItemInspector } from "./V2ItemInspector";
 import { DiffStatLabel } from "./DiffStatLabel";
+import { fileBasename, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { SubagentNotificationLink } from "./V2LifecycleRow";
 import {
   TimelineRowCtx,
@@ -275,6 +278,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? undefined
       : (workEntry.toolIcon ?? workEntry.toolSource?.icon);
   const isReasoning = workEntry.itemType === "reasoning";
+  const fileTarget = workEntryFileTarget(workEntry);
   const questionHeading = workEntry.questionAnswer
     ? getQuestionTextPreview(workEntry.questionAnswer)
     : "";
@@ -430,6 +434,19 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                   environmentId={ctx.activeThreadEnvironmentId}
                   linked
                 />
+              ) : fileTarget && threadRef ? (
+                <FileTargetLabel
+                  label={previewText}
+                  path={fileTarget}
+                  onOpen={() =>
+                    useRightPanelStore
+                      .getState()
+                      .openFile(
+                        threadRef,
+                        workspaceRelativeFilePath(fileTarget, workspaceRoot) ?? fileTarget,
+                      )
+                  }
+                />
               ) : (
                 previewText
               )}
@@ -565,6 +582,39 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         </WorkLogDetails>
       ) : null}
     </WorkLogRow>
+  );
+}
+
+/** Turns the file's name inside a row label into a chip that opens the file. */
+function FileTargetLabel(props: { label: string; path: string; onOpen: () => void }) {
+  const name = fileBasename(props.path);
+  const at = props.label.lastIndexOf(name);
+  const chip = (
+    <button
+      type="button"
+      aria-label={`Open ${props.path}`}
+      className="rounded-sm bg-muted/60 px-1 font-mono text-foreground/85 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onOpen();
+      }}
+      onKeyDown={stopRowToggle}
+    >
+      {name}
+    </button>
+  );
+  if (at < 0)
+    return (
+      <>
+        {props.label} {chip}
+      </>
+    );
+  return (
+    <>
+      {props.label.slice(0, at)}
+      {chip}
+      {props.label.slice(at + name.length)}
+    </>
   );
 }
 

@@ -202,6 +202,19 @@ export function threadReadLabelPrefix(label: string) {
     : null;
 }
 
+/** The one file a read or edit row is about, so its name can open the file; null when several. */
+export function workEntryFileTarget(entry: WorkLogEntry): string | null {
+  const action = toolGroupAction(entry);
+  const paths =
+    action === "read"
+      ? workEntryReadRawPaths(entry)
+      : action === "edit"
+        ? (entry.changedFiles ?? [])
+        : [];
+  const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
+  return unique.length === 1 ? unique[0]! : null;
+}
+
 export function workEntryReadOutput(
   entry: Pick<
     WorkLogEntry,
@@ -561,6 +574,9 @@ type MessagesTimelineRowContent =
       runId: RunId;
       label: string;
       expanded: boolean;
+      /** Null while some of the work is still deferred on the server, so counts would undercount. */
+      stepCount: number | null;
+      diffStat: WorkEntriesDiffStat | null;
     }
   | {
       kind: "attempt-fold";
@@ -1711,9 +1727,16 @@ export function deriveMessagesTimelineRows(input: {
           ? [String(entry.entry.projectedItem.sourceItemId)]
           : [];
       });
+      const foldedWork = [...turnFold.hiddenEntryIds].flatMap((entryId) => {
+        const entry = timelineEntryById.get(entryId);
+        return entry?.kind === "work" && workLogEntryIsToolLike(entry.entry) ? [entry.entry] : [];
+      });
+      const countsComplete = deferredWorkItemIds.length === 0;
       nextRows.push({
         kind: "turn-fold",
         id: `turn-fold:${turnFold.runId}`,
+        stepCount: countsComplete && foldedWork.length > 0 ? foldedWork.length : null,
+        diffStat: countsComplete ? workEntriesDiffStat(foldedWork) : null,
         ...(deferredWorkItemIds.length > 0 ? { deferredWorkItemIds } : {}),
         createdAt: turnFold.createdAt,
         runId: turnFold.runId,
@@ -2394,6 +2417,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.createdAt === bf.createdAt &&
         a.label === bf.label &&
         a.expanded === bf.expanded &&
+        (a.kind !== "turn-fold" ||
+          (a.stepCount === (bf as typeof a).stepCount &&
+            a.diffStat?.additions === (bf as typeof a).diffStat?.additions &&
+            a.diffStat?.deletions === (bf as typeof a).diffStat?.deletions)) &&
         anchors.length === nextAnchors.length &&
         anchors.every((id, index) => id === nextAnchors[index])
       );
