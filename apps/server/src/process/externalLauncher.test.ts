@@ -59,6 +59,7 @@ function makeMockDetachedHandle(input: MockSpawnResult & { readonly onUnref?: ()
 const layerTest = (input: {
   readonly platform: NodeJS.Platform;
   readonly env?: Record<string, string>;
+  readonly fileSystem?: FileSystem.FileSystem;
   readonly resolveExecutable?: (command: string) => string | undefined;
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
@@ -83,8 +84,15 @@ const layerTest = (input: {
     ),
   );
 
+  const launcherLayer = input.fileSystem
+    ? ExternalLauncher.layer.pipe(
+        Layer.provide(Layer.succeed(FileSystem.FileSystem, input.fileSystem)),
+        Layer.provide(Layer.merge(NodeServices.layer, layerSpawner)),
+      )
+    : ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, layerSpawner)));
+
   return Layer.mergeAll(
-    ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, layerSpawner))),
+    launcherLayer,
     Layer.succeed(HostProcess.Platform, input.platform),
     Layer.succeed(
       SpawnExecutableResolution,
@@ -605,6 +613,25 @@ it.effect("keeps the macOS VS Code Insiders bundle out of stable VS Code", () =>
       yield* fs.writeFileString(path.join(bin, name), "#!/bin/sh\n");
       yield* fs.chmod(path.join(bin, name), 0o755);
     }
+    const systemApplications = path.resolve("/Applications");
+    const isolatedFileSystem = FileSystem.FileSystem.of({
+      ...fs,
+      readDirectory: (target, options) =>
+        path.resolve(target) === systemApplications
+          ? Effect.succeed([])
+          : fs.readDirectory(target, options),
+      stat: (target) =>
+        path.resolve(target).startsWith(`${systemApplications}${path.sep}`)
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "NotFound",
+                module: "FileSystem",
+                method: "stat",
+                description: "Application is outside the test home",
+              }),
+            )
+          : fs.stat(target),
+    });
 
     let spawned: ChildProcess.StandardCommand | undefined;
     const editors = yield* Effect.gen(function* () {
@@ -617,6 +644,7 @@ it.effect("keeps the macOS VS Code Insiders bundle out of stable VS Code", () =>
         layerTest({
           platform: "darwin",
           env: { HOME: home, PATH: path.join(home, "empty") },
+          fileSystem: isolatedFileSystem,
           onSpawn: (command) => {
             spawned = command;
           },
