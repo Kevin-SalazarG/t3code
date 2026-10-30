@@ -11,7 +11,7 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "servers", label: "Servers", defaultVisible: true },
   { id: "automations", label: "Automations", defaultVisible: true },
   { id: "lineage", label: "Lineage", defaultVisible: true },
-  { id: "usage", label: "Usage", defaultVisible: false },
+  { id: "usage", label: "Usage", defaultVisible: true },
 ] as const;
 
 export type ThreadDetailsItemId = (typeof THREAD_DETAILS_ITEMS)[number]["id"];
@@ -25,7 +25,7 @@ type ThreadDetailsItemSettings = Pick<
 
 // People who turned on the retired Labs toggle keep Usage until they change it here.
 function defaultVisible(item: ThreadDetailsItem, settings: ThreadDetailsItemSettings) {
-  return item.id === "usage" ? settings.threadDetailsUsageEnabled : item.defaultVisible;
+  return (item.id === "usage" && settings.threadDetailsUsageEnabled) || item.defaultVisible;
 }
 
 export function resolveThreadDetailsVisibility(

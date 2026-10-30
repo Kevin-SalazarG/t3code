@@ -1,9 +1,17 @@
-import type {
-  ProviderInstanceId,
-  ServerProvider,
-  ServerProviderUsageWindow,
-  UsageLimitSourceSnapshots,
+import { useAtomValue } from "@effect/atom-react";
+import {
+  AuthDiagnosticsReadScope,
+  type EnvironmentId,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Subagent,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerProviderUsageWindow,
+  type UsageLimitSourceSnapshots,
+  isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
+import { formatUsd, makeWindow } from "@t3tools/shared/usageFormat";
 import {
   collectProviderUsageLimits,
   formatDuration,
@@ -12,13 +20,26 @@ import {
   paceOf,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import { AsyncResult } from "effect/reactivity";
+import {
+  BotIcon,
+  CalendarIcon,
+  ClockIcon,
+  CoinsIcon,
+  GaugeIcon,
+  ZapIcon,
+  type LucideIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "../../lib/contextWindow";
 import { cn } from "../../lib/utils";
+import { serverEnvironment } from "../../state/server";
+import { readEnvironmentScope } from "../../state/session";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "../usage/usageProviders";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 
@@ -33,17 +54,22 @@ export interface ThreadDetailsUsageInput {
   readonly providers: readonly ServerProvider[];
   readonly sources: UsageLimitSourceSnapshots;
   readonly contextWindow: ContextWindowSnapshot | null;
+  readonly environmentId: EnvironmentId;
+  readonly providerThreadId: OrchestrationV2ProviderTurn["providerThreadId"] | null;
+  readonly providerTurns: readonly OrchestrationV2ProviderTurn[];
+  readonly subagents: readonly OrchestrationV2Subagent[];
 }
 
-/**
- * The selected provider's limit windows and the thread's context window.
- * Every row reads as room left, so a longer bar always means more headroom.
- */
+/** The selected provider's limit windows, plus the thread's context and prompt cache use. */
 export function ThreadDetailsUsage({
   providerInstanceId,
   providers,
   sources,
   contextWindow,
+  environmentId,
+  providerThreadId,
+  providerTurns,
+  subagents,
 }: ThreadDetailsUsageInput) {
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
@@ -57,6 +83,25 @@ export function ThreadDetailsUsage({
     report?.accounts.find((entry) => entry.instanceId === providerInstanceId)?.limits ??
     providers.find((provider) => provider.instanceId === providerInstanceId)?.usageLimits;
   const notice = limits ? limitsNotice(limits) : null;
+  const cacheHit = cacheHitPercent(contextWindow);
+  const turnUsage = latestTurnUsages(providerTurns, providerThreadId);
+  const growth =
+    turnUsage.latest && turnUsage.previous
+      ? turnUsage.latest.usedTokens - turnUsage.previous.usedTokens
+      : null;
+  const cacheExpiresAt = turnUsage.latest?.promptCacheExpiresAt
+    ? Date.parse(turnUsage.latest.promptCacheExpiresAt)
+    : Number.NaN;
+  const cacheLeftMs = cacheExpiresAt > now ? cacheExpiresAt - now : null;
+  const activeAgents = subagents.filter((agent) =>
+    isOrchestrationV2WorkActive(agent.status),
+  ).length;
+  const driver = providers.find((provider) => provider.instanceId === providerInstanceId)?.driver;
+  // The cost scan reads local transcripts, so only sessions allowed to read diagnostics ask for it.
+  const showCost =
+    driver !== undefined &&
+    usageKindOf(driver) !== null &&
+    readEnvironmentScope(environmentId, AuthDiagnosticsReadScope);
   if (!limits && !contextWindow) return null;
 
   return (
@@ -68,6 +113,7 @@ export function ThreadDetailsUsage({
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
         {notice ? (
           <UsageRow
+            icon={ClockIcon}
             label="Limits"
             left={null}
             value="Unavailable"
@@ -77,10 +123,125 @@ export function ThreadDetailsUsage({
         {limits && !notice
           ? limits.windows.map((window) => <LimitRow key={window.id} window={window} now={now} />)
           : null}
-        {contextWindow ? <ContextRow usage={contextWindow} spaced={limits !== undefined} /> : null}
+        {contextWindow ? (
+          <ContextRow usage={contextWindow} growth={growth} spaced={limits !== undefined} />
+        ) : null}
+        {cacheHit !== null ? (
+          <UsageRow
+            icon={ZapIcon}
+            label="Cache"
+            left={cacheHit}
+            muted
+            tooltip={
+              <>
+                <span className="text-foreground">
+                  {cacheHit}% of input tokens were read from the prompt cache
+                </span>
+                {cacheLeftMs !== null ? (
+                  <span className="text-muted-foreground">
+                    Cache expires in {formatDuration(cacheLeftMs)}
+                  </span>
+                ) : null}
+                {turnUsage.latest?.outputTokens !== undefined ? (
+                  <span className="text-muted-foreground">
+                    Last turn: {formatContextWindowTokens(turnUsage.latest.outputTokens)} output
+                    {turnUsage.latest.reasoningOutputTokens
+                      ? `, ${formatContextWindowTokens(turnUsage.latest.reasoningOutputTokens)} reasoning`
+                      : ""}{" "}
+                    tokens
+                  </span>
+                ) : null}
+              </>
+            }
+          />
+        ) : null}
+        {showCost && driver ? <TodayCostRow environmentId={environmentId} driver={driver} /> : null}
+        {activeAgents > 0 ? (
+          <UsageRow
+            icon={BotIcon}
+            label="Agents"
+            left={null}
+            value={`${activeAgents} running`}
+            tooltip={
+              <span className="text-foreground">
+                {activeAgents} {activeAgents === 1 ? "subagent is" : "subagents are"} working in
+                this thread
+              </span>
+            }
+          />
+        ) : null}
       </div>
     </ThreadDetailsSection>
   );
+}
+
+function usageKindOf(driver: ProviderDriverKind) {
+  return PROVIDER_ORDER.find((kind) => PROVIDER_PRESENTATION[kind].driverKind === driver) ?? null;
+}
+
+/** The two newest reports on the active provider thread, so growth never spans a provider switch. */
+function latestTurnUsages(
+  turns: readonly OrchestrationV2ProviderTurn[],
+  providerThreadId: OrchestrationV2ProviderTurn["providerThreadId"] | null,
+) {
+  let latest: NonNullable<OrchestrationV2ProviderTurn["tokenUsage"]> | null = null;
+  let previous: NonNullable<OrchestrationV2ProviderTurn["tokenUsage"]> | null = null;
+  for (const turn of turns) {
+    const usage = turn.tokenUsage;
+    if (usage === undefined || turn.providerThreadId !== providerThreadId) continue;
+    if (latest === null || Date.parse(usage.updatedAt) >= Date.parse(latest.updatedAt)) {
+      previous = latest;
+      latest = usage;
+    } else if (previous === null || Date.parse(usage.updatedAt) >= Date.parse(previous.updatedAt)) {
+      previous = usage;
+    }
+  }
+  return { latest, previous };
+}
+
+/** Today's estimated spend for the provider, from the same transcript scan as Settings → Usage. */
+function TodayCostRow({
+  environmentId,
+  driver,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly driver: ProviderDriverKind;
+}) {
+  const input = makeWindow(1);
+  const result = useAtomValue(serverEnvironment.usageSummary({ environmentId, input }));
+  const summary = AsyncResult.getOrElse(result, () => null);
+  const kind = usageKindOf(driver);
+  if (summary === null || kind === null) return null;
+  const buckets = summary.buckets.filter((bucket) => bucket.provider === kind);
+  if (buckets.length === 0) return null;
+  const cost = buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0);
+  const unpriced = buckets.some((bucket) => bucket.costSource === "unpriced");
+  return (
+    <UsageRow
+      icon={CoinsIcon}
+      label="Today"
+      left={null}
+      className="mt-2"
+      value={`≈ ${formatUsd(cost)}`}
+      tooltip={
+        <>
+          <span className="text-foreground">
+            {PROVIDER_PRESENTATION[kind].label} today: ≈ {formatUsd(cost)}
+          </span>
+          <span className="text-muted-foreground">
+            Estimated from local transcripts{unpriced ? "; some models have no price" : ""}
+          </span>
+        </>
+      }
+    />
+  );
+}
+
+function cacheHitPercent(usage: ContextWindowSnapshot | null): number | null {
+  const input = usage?.lastInputTokens ?? usage?.inputTokens ?? null;
+  const cached = usage?.lastCachedInputTokens ?? usage?.cachedInputTokens ?? null;
+  if (input === null || cached === null || input <= 0) return null;
+  return Math.round(Math.min(100, (cached / input) * 100));
 }
 
 function LimitRow({
@@ -96,6 +257,7 @@ function LimitRow({
   const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
   return (
     <UsageRow
+      icon={window.kind === "session" ? ClockIcon : CalendarIcon}
       label={window.label}
       left={left}
       tooltip={
@@ -118,9 +280,11 @@ function LimitRow({
 
 function ContextRow({
   usage,
+  growth,
   spaced,
 }: {
   readonly usage: ContextWindowSnapshot;
+  readonly growth: number | null;
   readonly spaced: boolean;
 }) {
   const maxTokens = usage.maxTokens ?? null;
@@ -131,6 +295,7 @@ function ContextRow({
   const used = formatContextWindowTokens(usage.usedTokens);
   return (
     <UsageRow
+      icon={GaugeIcon}
       label="Context"
       left={left}
       muted
@@ -143,6 +308,12 @@ function ContextRow({
               ? `${used} of ${formatContextWindowTokens(maxTokens)} tokens used`
               : `${used} tokens used`}
           </span>
+          {growth !== null && growth !== 0 ? (
+            <span className="text-muted-foreground">
+              {growth > 0 ? "Grew" : "Shrank"} {formatContextWindowTokens(Math.abs(growth))} since
+              the previous turn
+            </span>
+          ) : null}
         </>
       }
       value={left === null ? used : undefined}
@@ -152,6 +323,7 @@ function ContextRow({
 
 /** One label, hairline, and value row; the whole row opens the details tooltip. */
 function UsageRow({
+  icon: Icon,
   label,
   left,
   tooltip,
@@ -159,6 +331,7 @@ function UsageRow({
   muted = false,
   className,
 }: {
+  readonly icon: LucideIcon;
   readonly label: string;
   readonly left: number | null;
   readonly tooltip: ReactNode;
@@ -182,7 +355,10 @@ function UsageRow({
           />
         }
       >
-        <span className="max-w-28 truncate text-muted-foreground">{label}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+          <Icon className="size-3.5 shrink-0" aria-hidden />
+          <span className="max-w-28 truncate">{label}</span>
+        </span>
         {left !== null ? (
           <span className="relative h-[3px] rounded-full bg-muted-foreground/30 dark:bg-muted-foreground/20">
             {left > 0 ? (

@@ -46,7 +46,11 @@ import {
   latestExecutedRun,
   latestRootProviderFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ProviderTurn,
+  OrchestrationV2Subagent,
+  UsageLimitSourceSnapshots,
+} from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
@@ -374,6 +378,8 @@ import {
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
+const EMPTY_PROVIDER_TURNS: readonly OrchestrationV2ProviderTurn[] = [];
+const EMPTY_SUBAGENTS: readonly OrchestrationV2Subagent[] = [];
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
 
 const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
@@ -3787,6 +3793,10 @@ export default function ChatView(props: ChatViewProps) {
                 providers: providerStatuses,
                 sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
                 contextWindow: activeContextWindow,
+                environmentId: activeThread.environmentId,
+                providerThreadId: activeProviderThread?.id ?? null,
+                providerTurns: serverProjection?.providerTurns ?? EMPTY_PROVIDER_TURNS,
+                subagents: serverProjection?.subagents ?? EMPTY_SUBAGENTS,
               }}
             />
 
