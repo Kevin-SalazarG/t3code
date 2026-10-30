@@ -212,7 +212,6 @@ export function ThreadDetailsUsage({
             environmentId={environmentId}
             provider={provider}
             providers={providers}
-            usageUpdatedAt={turnUsage.latest?.updatedAt ?? null}
             settledRunId={settledRunId}
           />
         ) : null}
@@ -271,13 +270,11 @@ function TodayCostRow({
   environmentId,
   provider,
   providers,
-  usageUpdatedAt,
   settledRunId,
 }: {
   readonly environmentId: EnvironmentId;
   readonly provider: ServerProvider;
   readonly providers: readonly ServerProvider[];
-  readonly usageUpdatedAt: string | null;
   readonly settledRunId: RunId | null;
 }) {
   const input = makeWindow(1);
@@ -287,9 +284,9 @@ function TodayCostRow({
       serverEnvironment.usageSummary({ environmentId, input: makeWindow(1) }),
     );
   });
-  const version = JSON.stringify([provider.instanceId, usageUpdatedAt, settledRunId]);
+  const version = JSON.stringify([provider.instanceId, settledRunId]);
   const previousVersion = useRef(version);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- rescans transcripts after usage changes, coalescing bursts of provider events
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- rescans transcripts once a turn settles; mid-turn token reports would rescan every few seconds
   useEffect(() => {
     if (previousVersion.current === version) return;
     previousVersion.current = version;
