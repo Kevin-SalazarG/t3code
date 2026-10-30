@@ -1285,6 +1285,21 @@ export default function ChatView(props: ChatViewProps) {
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const usageProviderInstanceId =
+    modelPickerLockedProvider === lockedProvider
+      ? activeProviderInstanceId
+      : (resolveComposerProviderSelection({
+          entries: providerInstanceEntries,
+          candidateInstanceIds: [
+            selectedProviderByThreadId,
+            activeThread?.runtime?.providerInstanceId,
+            activeThreadModelInstanceId,
+            activeProjectDefaultModelSelection?.instanceId,
+          ],
+          lockedProvider: modelPickerLockedProvider,
+          lockedInstanceId:
+            activeThread?.runtime?.providerInstanceId ?? activeThreadModelInstanceId,
+        }).selectedProviderEntry?.instanceId ?? null);
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
     planModeEnabled: settings.planModeEnabled,
     provider: activeProviderStatus,
@@ -1440,6 +1455,12 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadLiveTokenUsage,
     activeProviderThread,
   );
+  const usageProviderIsActive =
+    usageProviderInstanceId !== null &&
+    usageProviderInstanceId ===
+      (activeProviderThread?.providerInstanceId ??
+        activeRuntime?.providerInstanceId ??
+        activeThread?.modelSelection.instanceId);
   const pendingBackgroundTasks = deriveThreadPendingBackgroundTasks(serverProjection);
   const activeWorkStartedAt =
     deriveActiveWorkStartedAt(activeActivityRun, activeRuntime, localDispatchStartedAt) ??
@@ -3789,13 +3810,15 @@ export default function ChatView(props: ChatViewProps) {
               onUpdateProjectScript={updateProjectScriptStable}
               onDeleteProjectScript={deleteProjectScriptStable}
               usage={{
-                providerInstanceId: activeProviderInstanceId,
+                providerInstanceId: usageProviderInstanceId,
                 providers: providerStatuses,
                 sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
-                contextWindow: activeContextWindow,
+                contextWindow: usageProviderIsActive ? activeContextWindow : null,
                 environmentId: activeThread.environmentId,
-                providerThreadId: activeProviderThread?.id ?? null,
-                providerTurns: serverProjection?.providerTurns ?? EMPTY_PROVIDER_TURNS,
+                providerThreadId: usageProviderIsActive ? (activeProviderThread?.id ?? null) : null,
+                providerTurns: usageProviderIsActive
+                  ? (serverProjection?.providerTurns ?? EMPTY_PROVIDER_TURNS)
+                  : EMPTY_PROVIDER_TURNS,
                 subagents: serverProjection?.subagents ?? EMPTY_SUBAGENTS,
               }}
             />

@@ -25,6 +25,7 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import type {
   ConnectionAttemptError,
@@ -185,6 +186,7 @@ export interface FakeThread {
   readonly title: string;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly historyOrigin?: "v1_import";
 }
 
 /** A thread of `turns` user prompts, each answered in markdown with a list and inline code. */
@@ -265,6 +267,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       title: shell.title,
       providerInstanceId: shell.providerInstanceId,
       modelSelection: shell.modelSelection,
+      ...(thread.historyOrigin ? { historyOrigin: thread.historyOrigin } : {}),
       runtimeMode: shell.runtimeMode,
       interactionMode: shell.interactionMode,
       branch: shell.branch,
@@ -308,6 +311,7 @@ const json = (body: unknown, status = 200) =>
 // Keyed by thread id: a live thread subscription's queue, for pushing events to it.
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
 let threads: ReadonlyArray<FakeThread> = [];
+let currentServerConfig = serverConfig;
 let sequence = 1;
 
 const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>) => () => void) =>
@@ -357,7 +361,7 @@ const handlers: Record<string, (input: never) => unknown> = {
     );
   },
   [WS_METHODS.subscribeServerConfig]: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig }]),
+    subscribe([{ version: 1 as const, type: "snapshot" as const, config: currentServerConfig }]),
 };
 
 // Unanswered calls stay pending, like a server that has not replied yet.
@@ -372,9 +376,9 @@ const client = new Proxy(handlers, {
 
 const session: EnvironmentConnectionLease["session"] = {
   client: client as unknown as WsRpcProtocolClient,
-  initialConfig: Effect.succeed(serverConfig),
+  initialConfig: Effect.sync(() => currentServerConfig),
   subscribeServerConfig: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig }]),
+    subscribe([{ version: 1 as const, type: "snapshot" as const, config: currentServerConfig }]),
   ready: Effect.void,
   probe: Effect.void,
   inboundFrames: Effect.succeed(0),
@@ -408,8 +412,26 @@ const encodedDescriptor = Schema.encodeSync(ExecutionEnvironmentDescriptor)(
 );
 
 /** Serves the environment's HTTP API and these threads until disposed. */
-export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Disposable {
+export function installFakeEnvironment(
+  fixtures: ReadonlyArray<FakeThread>,
+  options?: { readonly providers?: ReadonlyArray<ServerProvider> },
+): Disposable {
   threads = fixtures;
+  currentServerConfig = options?.providers
+    ? {
+        ...serverConfig,
+        providers: options.providers,
+        settings: {
+          ...serverConfig.settings,
+          providerInstances: Object.fromEntries(
+            options.providers.map((provider) => [
+              provider.instanceId,
+              { driver: provider.driver, enabled: provider.enabled },
+            ]),
+          ),
+        },
+      }
+    : serverConfig;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -431,6 +453,7 @@ export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Dis
     [Symbol.dispose]: () => {
       globalThis.fetch = realFetch;
       threads = [];
+      currentServerConfig = serverConfig;
     },
   };
 }
