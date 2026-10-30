@@ -5,7 +5,6 @@ import { FileCodeIcon } from "lucide-react";
 import { useState } from "react";
 
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import { cn } from "../../lib/utils";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { useQuietThreadVisibleTurnItems } from "../../state/entities";
 import { DiffStatLabel } from "./DiffStatLabel";
@@ -49,16 +48,9 @@ export function ThreadResultsPanel(props: {
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/85">
                 {fileBasename(file.path)}
               </span>
-              <span
-                className={cn(
-                  "shrink-0 text-2xs",
-                  file.kind === "created"
-                    ? "text-diff-addition-foreground"
-                    : "text-muted-foreground",
-                )}
-              >
-                {file.kind === "created" ? "New" : "Edited"}
-              </span>
+              {file.kind === "created" ? (
+                <span className="shrink-0 text-2xs text-diff-addition-foreground">New</span>
+              ) : null}
               {file.counted ? (
                 <DiffStatLabel
                   additions={file.additions}
