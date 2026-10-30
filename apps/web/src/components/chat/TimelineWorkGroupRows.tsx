@@ -20,7 +20,9 @@ import {
   shouldFollowWorkGroupAppend,
   workEntryIsVisibleInGroup,
   type MessagesTimelineRow,
+  type WorkEntriesDiffStat,
 } from "./MessagesTimeline.logic";
+import { DiffStatLabel } from "./DiffStatLabel";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
@@ -591,6 +593,8 @@ export function WorkGroupToggleTimelineRow({
       iconName={row.toolSurface ?? toolGroupSummaryIconName(row.summaryKind)}
       toolIcon={row.toolIcon}
       failed={row.hasFailure}
+      failureCount={row.failureCount}
+      diffStat={row.diffStat}
       expanded={row.expanded}
       createdAt={row.createdAt}
       timestampFormat={ctx.timestampFormat}
@@ -604,14 +608,26 @@ function WorkGroupHeader(props: {
   iconName: WorkEntryIconName;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean | undefined;
+  failureCount?: number | undefined;
+  diffStat?: WorkEntriesDiffStat | null | undefined;
   expanded: boolean;
   createdAt: string;
   timestampFormat: TimestampFormat;
   onToggle: () => void;
 }) {
+  const failureCount = props.failureCount ?? 0;
+  const failureLabel = failureCount > 0 ? `${failureCount} failed` : null;
   return (
     <WorkLogButton
-      aria-label={props.failed ? `${props.label}, tool call failed` : props.label}
+      aria-label={[
+        props.label,
+        props.diffStat
+          ? `${props.diffStat.additions} additions, ${props.diffStat.deletions} deletions`
+          : null,
+        failureLabel ?? (props.failed ? "tool call failed" : null),
+      ]
+        .filter(Boolean)
+        .join(", ")}
       aria-expanded={props.expanded}
       onClick={props.onToggle}
       icon={
@@ -622,7 +638,22 @@ function WorkGroupHeader(props: {
           muted
         />
       }
-      label={<span className="block truncate">{props.label}</span>}
+      label={
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="min-w-0 truncate">{props.label}</span>
+          {props.diffStat ? (
+            <DiffStatLabel
+              additions={props.diffStat.additions}
+              deletions={props.diffStat.deletions}
+              layout="inline"
+              className="shrink-0 text-xs"
+            />
+          ) : null}
+          {failureLabel ? (
+            <span className="shrink-0 text-xs text-destructive">({failureLabel})</span>
+          ) : null}
+        </span>
+      }
       trailing={
         <TimelineRowTimestamp createdAt={props.createdAt} timestampFormat={props.timestampFormat} />
       }

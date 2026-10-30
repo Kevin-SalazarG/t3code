@@ -294,6 +294,16 @@ describe("orchestration V2 wire projection", () => {
     });
     expect(failed).toMatchObject({ diffStr: "String to replace not found" });
     expect(failed).not.toHaveProperty("newStr");
+    const { additions: _a, deletions: _d, ...uncounted } = item;
+    const patch =
+      '--- "a/src/main.ts"\n+++ "b/src/main.ts"\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more\n';
+    expect(projectTurnItemForWire({ ...uncounted, diffStr: patch })).toMatchObject({
+      additions: 2,
+      deletions: 1,
+    });
+    expect(projectTurnItemForWire({ ...uncounted, diffStr: "+raw content" })).not.toHaveProperty(
+      "additions",
+    );
   });
 
   it("retains only result identities and failure metadata in live tool events", () => {

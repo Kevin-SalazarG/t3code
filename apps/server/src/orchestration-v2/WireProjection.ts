@@ -27,6 +27,22 @@ const MAX_DETAIL_STRING_BYTES = 32_768;
 const MAX_DYNAMIC_VALUE_BYTES = 16_384;
 const MAX_ON_DEMAND_BYTES = 256 * 1024;
 
+function unifiedPatchLineCounts(
+  patch: string,
+): { readonly additions: number; readonly deletions: number } | null {
+  let additions = 0;
+  let deletions = 0;
+  let inHunk = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) inHunk = true;
+    else if (line.startsWith("diff --git ")) inHunk = false;
+    else if (!inHunk) continue;
+    else if (line.startsWith("+")) additions += 1;
+    else if (line.startsWith("-")) deletions += 1;
+  }
+  return additions > 0 || deletions > 0 ? { additions, deletions } : null;
+}
+
 function truncateDetail(
   value: string | undefined,
   maxBytes = MAX_DETAIL_STRING_BYTES,
@@ -170,9 +186,15 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
     }
     case "file_change": {
       const { diffStr, oldStr: _old, newStr: _new, ...projected } = item;
-      return item.status === "failed" && diffStr?.trim()
-        ? { ...projected, diffStr: truncateDetail(diffStr) }
-        : projected;
+      if (item.status === "failed" && diffStr?.trim()) {
+        return { ...projected, diffStr: truncateDetail(diffStr) };
+      }
+      // Providers record the patch, not its counts; the client needs counts without the patch.
+      const counts =
+        projected.additions === undefined && projected.deletions === undefined && diffStr
+          ? unifiedPatchLineCounts(diffStr)
+          : null;
+      return counts ? { ...projected, ...counts } : projected;
     }
     case "subagent":
       return {

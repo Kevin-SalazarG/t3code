@@ -25,6 +25,7 @@ import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { CommandOutputPanel, useCommandOutputStreaming } from "./CommandOutputPanel";
 import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
+import { InlineToolDiff } from "./InlineToolDiff";
 import { ShellCommandBlock } from "./ShellCommandBlock";
 import type { TurnItemSource } from "./timelineRowContext";
 
@@ -243,6 +244,12 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
   );
   const item = fetched.item;
   const outputState = fetched.output;
+  const openToolDiff = () =>
+    props.onOpenToolDiff?.({
+      threadId: props.projectedItem.sourceThreadId,
+      itemId: props.projectedItem.sourceItemId,
+      revision: turnItemDetailRevision(item),
+    });
   return (
     <div className="space-y-2 text-xs" data-v2-item-inspector={item.type}>
       {item.type === "reasoning" && item.text ? (
@@ -291,23 +298,21 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
               </span>
             ) : null}
             {props.onOpenToolDiff ? (
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() =>
-                  props.onOpenToolDiff?.({
-                    threadId: props.projectedItem.sourceThreadId,
-                    itemId: props.projectedItem.sourceItemId,
-                    revision: turnItemDetailRevision(item),
-                  })
-                }
-              >
+              <Button size="xs" variant="outline" onClick={openToolDiff}>
                 Open diff
               </Button>
             ) : null}
           </div>
           {item.status === "failed" && item.diffStr?.trim() ? (
             <StructuredValue value={item.diffStr} />
+          ) : null}
+          {item.status === "completed" ? (
+            <InlineToolDiff
+              projectedItem={props.projectedItem}
+              environmentId={props.environmentId}
+              source={props.source}
+              onOpenFullDiff={props.onOpenToolDiff ? openToolDiff : undefined}
+            />
           ) : null}
           {item.changes !== undefined && item.changes.length > 0 ? (
             <ul className="space-y-1 font-mono text-muted-foreground">

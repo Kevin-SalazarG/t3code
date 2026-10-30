@@ -550,6 +550,8 @@ type MessagesTimelineRowContent =
       toolSurface?: WorkLogEntry["toolSurface"];
       toolIcon?: WorkLogEntry["toolIcon"];
       hasFailure: boolean;
+      diffStat: WorkEntriesDiffStat | null;
+      failureCount: number;
     }
   | {
       kind: "turn-fold";
@@ -1920,6 +1922,8 @@ export function deriveMessagesTimelineRows(input: {
             hasFailure:
               latestToolEntry !== undefined &&
               workEntryDisplayIndicatesToolFailure(latestToolEntry),
+            diffStat: workEntriesDiffStat(visibleGroupedEntries),
+            failureCount: visibleGroupedEntries.filter(workEntryDisplayIndicatesToolFailure).length,
           });
           if (expanded) {
             nextRows.push(
@@ -2465,7 +2469,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.summaryKind === bw.summaryKind &&
         a.toolSurface === bw.toolSurface &&
         Equal.equals(a.toolIcon, bw.toolIcon) &&
-        a.hasFailure === bw.hasFailure
+        a.hasFailure === bw.hasFailure &&
+        a.diffStat?.additions === bw.diffStat?.additions &&
+        a.diffStat?.deletions === bw.diffStat?.deletions &&
+        a.failureCount === bw.failureCount
       );
     }
 
@@ -2534,4 +2541,26 @@ export function sameRowsInput(
     return false;
   }
   return Object.keys(left).length === Object.keys(right).length;
+}
+
+export interface WorkEntriesDiffStat {
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+/** Line counts the provider reported for the group's edits; null when none reported any. */
+function workEntriesDiffStat(
+  entries: ReadonlyArray<Pick<WorkLogEntry, "structuredPayload">>,
+): WorkEntriesDiffStat | null {
+  let additions = 0;
+  let deletions = 0;
+  let counted = false;
+  for (const { structuredPayload: item } of entries) {
+    if (item?.type !== "file_change" || item.status === "failed") continue;
+    if (item.additions === undefined && item.deletions === undefined) continue;
+    counted = true;
+    additions += item.additions ?? 0;
+    deletions += item.deletions ?? 0;
+  }
+  return counted ? { additions, deletions } : null;
 }
