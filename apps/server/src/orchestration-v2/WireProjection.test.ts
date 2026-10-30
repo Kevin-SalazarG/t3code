@@ -304,6 +304,13 @@ describe("orchestration V2 wire projection", () => {
     expect(projectTurnItemForWire({ ...uncounted, diffStr: "+raw content" })).not.toHaveProperty(
       "additions",
     );
+    const created = '--- /dev/null\n+++ "b/src/main.ts"\n@@ -0,0 +1,1 @@\n+new\n';
+    expect(projectTurnItemForWire({ ...uncounted, diffStr: created })).toMatchObject({
+      additions: 1,
+      deletions: 0,
+      changes: [{ operation: "add", path: "src/main.ts" }],
+    });
+    expect(projectTurnItemForWire({ ...uncounted, diffStr: patch })).not.toHaveProperty("changes");
   });
 
   it("retains only result identities and failure metadata in live tool events", () => {

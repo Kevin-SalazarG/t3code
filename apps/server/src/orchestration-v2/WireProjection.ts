@@ -27,20 +27,21 @@ const MAX_DETAIL_STRING_BYTES = 32_768;
 const MAX_DYNAMIC_VALUE_BYTES = 16_384;
 const MAX_ON_DEMAND_BYTES = 256 * 1024;
 
-function unifiedPatchLineCounts(
-  patch: string,
-): { readonly additions: number; readonly deletions: number } | null {
+function unifiedPatchSummary(patch: string) {
   let additions = 0;
   let deletions = 0;
+  let operation: "add" | "delete" | null = null;
   let inHunk = false;
   for (const line of patch.split("\n")) {
     if (line.startsWith("@@")) inHunk = true;
     else if (line.startsWith("diff --git ")) inHunk = false;
-    else if (!inHunk) continue;
-    else if (line.startsWith("+")) additions += 1;
+    else if (!inHunk) {
+      if (/^--- "?\/dev\/null"?(?:\t.*)?$/.test(line)) operation = "add";
+      else if (/^\+\+\+ "?\/dev\/null"?(?:\t.*)?$/.test(line)) operation = "delete";
+    } else if (line.startsWith("+")) additions += 1;
     else if (line.startsWith("-")) deletions += 1;
   }
-  return additions > 0 || deletions > 0 ? { additions, deletions } : null;
+  return { counts: additions > 0 || deletions > 0 ? { additions, deletions } : null, operation };
 }
 
 function truncateDetail(
@@ -190,11 +191,20 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
         return { ...projected, diffStr: truncateDetail(diffStr) };
       }
       // Providers record the patch, not its counts; the client needs counts without the patch.
+      if (!diffStr) return projected;
+      const summary = unifiedPatchSummary(diffStr);
       const counts =
-        projected.additions === undefined && projected.deletions === undefined && diffStr
-          ? unifiedPatchLineCounts(diffStr)
+        projected.additions === undefined && projected.deletions === undefined
+          ? summary.counts
           : null;
-      return counts ? { ...projected, ...counts } : projected;
+      // Claude records whether it created the file only in the patch headers.
+      const changes =
+        projected.changes === undefined && summary.operation !== null
+          ? [{ operation: summary.operation, path: item.fileName }]
+          : null;
+      return counts || changes
+        ? { ...projected, ...counts, ...(changes ? { changes } : {}) }
+        : projected;
     }
     case "subagent":
       return {
