@@ -121,6 +121,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
+      footer={visible.usage ? <ThreadDetailsUsage {...props.usage} /> : undefined}
       contentKey={THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
         .map((item) => item.id)
         .join(",")}
@@ -251,8 +252,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   threadId={props.threadId}
                 />
               ) : null}
-
-              {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
               <div className="p-2 group-has-[>section>:last-child:not(:empty)]/details-items:hidden">

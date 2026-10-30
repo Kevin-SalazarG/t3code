@@ -161,6 +161,7 @@ export function ThreadDetailsUsage({
             label="Cache"
             left={cacheHit}
             muted
+            toneless
             tooltip={
               <>
                 <span className="text-foreground">
@@ -310,6 +311,7 @@ function LimitRow({
       icon={window.kind === "session" ? ClockIcon : CalendarIcon}
       label={window.label}
       left={left}
+      warn={pace === "ahead"}
       tooltip={
         <>
           <span className="text-foreground">
@@ -379,6 +381,8 @@ function UsageRow({
   tooltip,
   value,
   muted = false,
+  toneless = false,
+  warn = false,
   className,
 }: {
   readonly icon: LucideIcon;
@@ -388,9 +392,14 @@ function UsageRow({
   /** Replaces the percentage when there is none. */
   readonly value?: string | undefined;
   readonly muted?: boolean;
+  /** For rows where a short bar is not a shortage, such as cache hits. */
+  readonly toneless?: boolean;
+  /** Warns before the threshold, such as a window being spent faster than it resets. */
+  readonly warn?: boolean;
   readonly className?: string | undefined;
 }) {
-  const tone = left === null ? null : left <= 10 ? "error" : left <= 20 ? "warning" : null;
+  const tone =
+    left === null || toneless ? null : left <= 10 ? "error" : left <= 30 || warn ? "warning" : null;
   return (
     <Tooltip>
       <TooltipTrigger

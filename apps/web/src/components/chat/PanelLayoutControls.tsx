@@ -55,7 +55,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       pressed={threadPanelOpen}
       onPressedChange={threadPanelPresentation === "popover" ? undefined : onToggleThreadPanel}
       aria-label="Toggle thread details panel"
-      variant="ghost"
+      variant="panel"
       size="sm"
     >
       <SquareMenuIcon className="size-4" />
@@ -91,7 +91,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               pressed={terminalOpen}
               onPressedChange={onToggleTerminal}
               aria-label="Toggle terminal drawer"
-              variant="ghost"
+              variant="panel"
               size="sm"
               disabled={!terminalAvailable}
             >
@@ -114,7 +114,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               onPressedChange={onToggleRightPanel}
               aria-label="Toggle right panel"
               data-right-panel-toggle
-              variant="ghost"
+              variant="panel"
               size="sm"
               disabled={!rightPanelAvailable}
             >
@@ -149,7 +149,7 @@ export const RightPanelMaximizeControl = memo(function RightPanelMaximizeControl
             pressed={maximized}
             onPressedChange={onToggle}
             aria-label={label}
-            variant="ghost"
+            variant="panel"
             size="sm"
           >
             <MorphIcon className="size-4" icon={maximized ? Minimize2 : Maximize2} />

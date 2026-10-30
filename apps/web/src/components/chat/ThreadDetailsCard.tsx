@@ -19,12 +19,15 @@ import {
 import { observeResize } from "../../lib/observeResize";
 import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 
+const THREAD_DETAILS_FOOTER_GAP = 8;
+
 export function ThreadDetailsCard({
   threadRef,
   anchor,
   handle,
   contentKey,
   onContextMenu,
+  footer,
   children,
 }: {
   threadRef: ScopedThreadRef;
@@ -33,6 +36,8 @@ export function ThreadDetailsCard({
   /** Changes when the set of rendered items changes, so cached heights are measured again. */
   contentKey: string;
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
+  /** A second card below the main one; it never scrolls and counts toward the measured height. */
+  footer?: ReactNode;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const detailsArea = workspaceAreaProps("details", 3, "Thread details");
@@ -68,6 +73,7 @@ export function ThreadDetailsCard({
       useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", false);
   }, [mode, popoverOpen, threadRef]);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
+  const [footerElement, setFooterElement] = useState<HTMLDivElement | null>(null);
   const { environmentId, threadId } = threadRef;
   // Re-measures when the density or measurement key changes, so each density's
   // height is measured once it renders.
@@ -77,7 +83,11 @@ export function ThreadDetailsCard({
     if (!element || density === "essential") return;
     const measure = () => {
       const frame = element.closest<HTMLElement>("[data-thread-details-card]");
-      const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
+      const footerHeight = footerElement?.offsetHeight
+        ? footerElement.offsetHeight + THREAD_DETAILS_FOOTER_GAP
+        : 0;
+      const next =
+        element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0) + footerHeight;
       // PR lists and lineage scroll as they expand. Counting them toward density would hide
       // the section and workspace controls when the user asks to see more rows.
       const lists = element.querySelectorAll<HTMLElement>(
@@ -102,9 +112,15 @@ export function ThreadDetailsCard({
       }
     };
     measure();
-    return observeResize(element, measure);
+    const stopContent = observeResize(element, measure);
+    const stopFooter = footerElement ? observeResize(footerElement, measure) : undefined;
+    return () => {
+      stopContent();
+      stopFooter?.();
+    };
   }, [
     contentElement,
+    footerElement,
     density,
     measurementKey,
     cardWidth,
@@ -112,14 +128,16 @@ export function ThreadDetailsCard({
     environmentId,
     threadId,
   ]);
-  const card = (
+  const main = (
     <div
       className={cn(
         "dropdown-glass isolate contain-paint grid max-h-full grid-rows-[minmax(0,1fr)] overflow-hidden rounded-2xl",
-        mode === "popover" &&
+        footer ? "min-h-0" : null,
+        !footer &&
+          mode === "popover" &&
           "max-h-[min(calc(100dvh-6.5rem),calc(var(--available-height,100dvh)-1rem))]",
       )}
-      style={placement ? { maxHeight: height } : undefined}
+      style={placement && !footer ? { maxHeight: height } : undefined}
       onContextMenu={onContextMenu}
       data-thread-details-card
     >
@@ -127,6 +145,27 @@ export function ThreadDetailsCard({
         <div ref={setContentElement}>{children(density)}</div>
       </ScrollArea>
     </div>
+  );
+  const card = footer ? (
+    <div
+      className={cn(
+        "flex max-h-full flex-col",
+        mode === "popover" &&
+          "max-h-[min(calc(100dvh-6.5rem),calc(var(--available-height,100dvh)-1rem))]",
+      )}
+      style={{ gap: THREAD_DETAILS_FOOTER_GAP, ...(placement ? { maxHeight: height } : {}) }}
+    >
+      {main}
+      <div
+        ref={setFooterElement}
+        className="dropdown-glass isolate shrink-0 overflow-hidden rounded-2xl empty:hidden"
+        data-thread-details-footer
+      >
+        {footer}
+      </div>
+    </div>
+  ) : (
+    main
   );
   return (
     <Popover

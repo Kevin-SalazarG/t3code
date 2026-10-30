@@ -26,6 +26,9 @@ const toggleVariants = cva(
         pill: "border-transparent rounded-full px-3 font-normal text-muted-foreground data-pressed:text-foreground",
         ghost:
           "border-transparent text-foreground shadow-none [:disabled,:active,[data-pressed]]:shadow-none before:shadow-none data-pressed:bg-accent data-pressed:text-accent-foreground disabled:opacity-100 disabled:text-muted-foreground disabled:[&_svg]:opacity-100",
+        // Layout toggles whose pressed state means a panel is open, so it reads clearly at a glance.
+        panel:
+          "border-transparent text-muted-foreground shadow-none [:disabled,:active,[data-pressed]]:shadow-none before:shadow-none hover:text-foreground data-pressed:bg-foreground/12 data-pressed:text-foreground data-pressed:[&_svg]:opacity-100 disabled:opacity-100 disabled:text-muted-foreground/60",
         outline:
           "border-input bg-background not-dark:bg-clip-padding shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] dark:bg-input/32 dark:data-pressed:bg-input dark:hover:bg-input/64 dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] dark:not-disabled:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/2%)] [:disabled,:active,[data-pressed]]:shadow-none",
         segmented:
