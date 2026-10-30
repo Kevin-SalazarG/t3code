@@ -30,7 +30,7 @@ import {
   ZapIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
@@ -38,6 +38,7 @@ import { type ContextWindowSnapshot, formatContextWindowTokens } from "../../lib
 import { cn } from "../../lib/utils";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "../usage/usageProviders";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -60,7 +61,10 @@ export interface ThreadDetailsUsageInput {
   readonly subagents: readonly OrchestrationV2Subagent[];
 }
 
-/** The selected provider's limit windows, plus the thread's context and prompt cache use. */
+// The server caches Claude's account probe for five minutes, so polling faster only rereads it.
+const LIMITS_REFRESH_MS = 60_000;
+
+/** The selected instance's own limits and spend, plus the thread's context and prompt cache use. */
 export function ThreadDetailsUsage({
   providerInstanceId,
   providers,
@@ -73,15 +77,33 @@ export function ThreadDetailsUsage({
 }: ThreadDetailsUsageInput) {
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
-  const report =
-    providerInstanceId !== null
-      ? collectProviderUsageLimits(providerInstanceId, providers, sources, now)
-      : null;
-  // Only this instance's data: the report keeps one instance per login, and any other entry may be
-  // a different login or workspace, so fall back to the instance's own snapshot.
+  const provider = providers.find((entry) => entry.instanceId === providerInstanceId);
+  // The instance's own probe comes first so each login shows its own numbers; the merged report
+  // only fills in accounts known solely through an external limits source.
   const limits =
-    report?.accounts.find((entry) => entry.instanceId === providerInstanceId)?.limits ??
-    providers.find((provider) => provider.instanceId === providerInstanceId)?.usageLimits;
+    provider?.usageLimits ??
+    (providerInstanceId !== null
+      ? collectProviderUsageLimits(providerInstanceId, providers, sources, now)?.accounts.find(
+          (entry) => entry.instanceId === providerInstanceId,
+        )?.limits
+      : undefined);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const checkedAt = provider?.usageLimits?.checkedAt;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls the server for the selected account's limits while the card is open
+  useEffect(() => {
+    if (providerInstanceId === null) return;
+    const refreshIfStale = () => {
+      const age = checkedAt ? Date.now() - Date.parse(checkedAt) : Number.POSITIVE_INFINITY;
+      if (age >= LIMITS_REFRESH_MS) {
+        void refreshProviders({ environmentId, input: { instanceId: providerInstanceId } });
+      }
+    };
+    refreshIfStale();
+    const timer = window.setInterval(refreshIfStale, LIMITS_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [environmentId, providerInstanceId, checkedAt, refreshProviders]);
   const notice = limits ? limitsNotice(limits) : null;
   const cacheHit = cacheHitPercent(contextWindow);
   const turnUsage = latestTurnUsages(providerTurns, providerThreadId);
@@ -96,19 +118,26 @@ export function ThreadDetailsUsage({
   const activeAgents = subagents.filter((agent) =>
     isOrchestrationV2WorkActive(agent.status),
   ).length;
-  const driver = providers.find((provider) => provider.instanceId === providerInstanceId)?.driver;
+  const driver = provider?.driver;
   // The cost scan reads local transcripts, so only sessions allowed to read diagnostics ask for it.
   const showCost =
     driver !== undefined &&
     usageKindOf(driver) !== null &&
     readEnvironmentScope(environmentId, AuthDiagnosticsReadScope);
   if (!limits && !contextWindow) return null;
+  const kind = driver ? usageKindOf(driver) : null;
+  const accountName =
+    provider?.displayName ?? (kind ? PROVIDER_PRESENTATION[kind].label : null) ?? "Usage";
 
   return (
     <ThreadDetailsSection
       headingId="thread-details-usage-heading"
-      title="Usage"
-      showHeading={false}
+      title={accountName}
+      actions={
+        provider?.auth.label ? (
+          <span className="truncate text-2xs text-muted-foreground">{provider.auth.label}</span>
+        ) : undefined
+      }
     >
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
         {notice ? (
@@ -155,7 +184,9 @@ export function ThreadDetailsUsage({
             }
           />
         ) : null}
-        {showCost && driver ? <TodayCostRow environmentId={environmentId} driver={driver} /> : null}
+        {showCost && provider ? (
+          <TodayCostRow environmentId={environmentId} provider={provider} providers={providers} />
+        ) : null}
         {activeAgents > 0 ? (
           <UsageRow
             icon={BotIcon}
@@ -199,20 +230,39 @@ function latestTurnUsages(
   return { latest, previous };
 }
 
-/** Today's estimated spend for the provider, from the same transcript scan as Settings → Usage. */
+function isWithinHome(path: string | undefined, home: string | undefined) {
+  return path !== undefined && home !== undefined && (path === home || path.startsWith(`${home}/`));
+}
+
+/**
+ * Today's estimated spend for this instance, from the same transcript scan as Settings → Usage.
+ * Buckets carry the transcript directory, so each login's home separates its spend.
+ */
 function TodayCostRow({
   environmentId,
-  driver,
+  provider,
+  providers,
 }: {
   readonly environmentId: EnvironmentId;
-  readonly driver: ProviderDriverKind;
+  readonly provider: ServerProvider;
+  readonly providers: readonly ServerProvider[];
 }) {
   const input = makeWindow(1);
   const result = useAtomValue(serverEnvironment.usageSummary({ environmentId, input }));
   const summary = AsyncResult.getOrElse(result, () => null);
-  const kind = usageKindOf(driver);
+  const kind = usageKindOf(provider.driver);
   if (summary === null || kind === null) return null;
-  const buckets = summary.buckets.filter((bucket) => bucket.provider === kind);
+  const home = provider.runtimePaths?.homePath;
+  const otherHomes = providers
+    .filter((other) => other.driver === provider.driver && other.instanceId !== provider.instanceId)
+    .flatMap((other) => (other.runtimePaths ? [other.runtimePaths.homePath] : []));
+  const buckets = summary.buckets.filter(
+    (bucket) =>
+      bucket.provider === kind &&
+      (home !== undefined
+        ? isWithinHome(bucket.sourcePath, home)
+        : !otherHomes.some((other) => isWithinHome(bucket.sourcePath, other))),
+  );
   if (buckets.length === 0) return null;
   const cost = buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0);
   const unpriced = buckets.some((bucket) => bucket.costSource === "unpriced");
@@ -226,7 +276,7 @@ function TodayCostRow({
       tooltip={
         <>
           <span className="text-foreground">
-            {PROVIDER_PRESENTATION[kind].label} today: ≈ {formatUsd(cost)}
+            {provider.displayName ?? PROVIDER_PRESENTATION[kind].label} today: ≈ {formatUsd(cost)}
           </span>
           <span className="text-muted-foreground">
             Estimated from local transcripts{unpriced ? "; some models have no price" : ""}
