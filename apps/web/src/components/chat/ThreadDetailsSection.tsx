@@ -1,6 +1,7 @@
 import type { ComponentProps, ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function ThreadDetailsSection({
   headingId,
@@ -8,6 +9,7 @@ export function ThreadDetailsSection({
   actions,
   separated = true,
   showHeading = true,
+  titleTooltip = false,
   children,
   ...props
 }: Omit<ComponentProps<"section">, "className" | "style" | "title" | "aria-labelledby"> & {
@@ -16,7 +18,17 @@ export function ThreadDetailsSection({
   actions?: ReactNode;
   separated?: boolean;
   showHeading?: boolean;
+  titleTooltip?: boolean;
 }) {
+  const heading = (
+    <h3
+      id={headingId}
+      tabIndex={titleTooltip ? 0 : undefined}
+      className="min-w-0 truncate text-2xs font-medium text-muted-foreground select-none"
+    >
+      {title}
+    </h3>
+  );
   return (
     <section
       {...props}
@@ -35,12 +47,16 @@ export function ThreadDetailsSection({
           !showHeading && "hidden",
         )}
       >
-        <h3
-          id={headingId}
-          className="min-w-0 truncate text-2xs font-medium text-muted-foreground select-none"
-        >
-          {title}
-        </h3>
+        {titleTooltip ? (
+          <Tooltip>
+            <TooltipTrigger render={heading} />
+            <TooltipPopup side="left" sideOffset={16}>
+              {title}
+            </TooltipPopup>
+          </Tooltip>
+        ) : (
+          heading
+        )}
         {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       </div>
       {children}

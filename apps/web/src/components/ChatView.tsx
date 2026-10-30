@@ -3820,6 +3820,7 @@ export default function ChatView(props: ChatViewProps) {
                   ? (serverProjection?.providerTurns ?? EMPTY_PROVIDER_TURNS)
                   : EMPTY_PROVIDER_TURNS,
                 subagents: serverProjection?.subagents ?? EMPTY_SUBAGENTS,
+                settledRunId: latestRunSettled ? (activeLatestRun?.runId ?? null) : null,
               }}
             />
 

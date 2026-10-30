@@ -25,7 +25,10 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type ServerConfigStreamEvent,
   type ServerProvider,
+  type UsageSummary,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import type {
   ConnectionAttemptError,
@@ -310,8 +313,10 @@ const json = (body: unknown, status = 200) =>
 
 // Keyed by thread id: a live thread subscription's queue, for pushing events to it.
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
+const configSubscribers = new Set<Queue.Queue<ServerConfigStreamEvent>>();
 let threads: ReadonlyArray<FakeThread> = [];
 let currentServerConfig = serverConfig;
+let readUsageSummary: ((input: UsageSummaryInput) => UsageSummary) | undefined;
 let sequence = 1;
 
 const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>) => () => void) =>
@@ -325,6 +330,15 @@ const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>
       }
       return Stream.fromQueue(queue);
     }),
+  );
+
+const subscribeServerConfig = () =>
+  subscribe<ServerConfigStreamEvent>(
+    [{ version: 1, type: "snapshot", config: currentServerConfig }],
+    (queue) => {
+      configSubscribers.add(queue);
+      return () => void configSubscribers.delete(queue);
+    },
   );
 
 const handlers: Record<string, (input: never) => unknown> = {
@@ -360,8 +374,11 @@ const handlers: Record<string, (input: never) => unknown> = {
       },
     );
   },
-  [WS_METHODS.subscribeServerConfig]: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: currentServerConfig }]),
+  [WS_METHODS.subscribeServerConfig]: subscribeServerConfig,
+  [WS_METHODS.serverGetUsageSummary]: (input: UsageSummaryInput) => {
+    const read = readUsageSummary;
+    return read ? Effect.sync(() => read(input)) : Effect.never;
+  },
 };
 
 // Unanswered calls stay pending, like a server that has not replied yet.
@@ -377,8 +394,7 @@ const client = new Proxy(handlers, {
 const session: EnvironmentConnectionLease["session"] = {
   client: client as unknown as WsRpcProtocolClient,
   initialConfig: Effect.sync(() => currentServerConfig),
-  subscribeServerConfig: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: currentServerConfig }]),
+  subscribeServerConfig,
   ready: Effect.void,
   probe: Effect.void,
   inboundFrames: Effect.succeed(0),
@@ -414,9 +430,13 @@ const encodedDescriptor = Schema.encodeSync(ExecutionEnvironmentDescriptor)(
 /** Serves the environment's HTTP API and these threads until disposed. */
 export function installFakeEnvironment(
   fixtures: ReadonlyArray<FakeThread>,
-  options?: { readonly providers?: ReadonlyArray<ServerProvider> },
+  options?: {
+    readonly providers?: ReadonlyArray<ServerProvider>;
+    readonly usageSummary?: (input: UsageSummaryInput) => UsageSummary;
+  },
 ): Disposable {
   threads = fixtures;
+  readUsageSummary = options?.usageSummary;
   currentServerConfig = options?.providers
     ? {
         ...serverConfig,
@@ -454,6 +474,7 @@ export function installFakeEnvironment(
       globalThis.fetch = realFetch;
       threads = [];
       currentServerConfig = serverConfig;
+      readUsageSummary = undefined;
     },
   };
 }
@@ -463,6 +484,19 @@ type ThreadEvent = Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "ev
 /** Whether the app holds a live subscription to the thread, so events reach it. */
 export function isThreadSubscribed(threadId: ThreadId): boolean {
   return threadSubscribers.has(threadId);
+}
+
+export async function emitProviderStatuses(
+  providers: ReadonlyArray<ServerProvider>,
+): Promise<void> {
+  const event: ServerConfigStreamEvent = {
+    version: 1,
+    type: "providerStatuses",
+    payload: { providers },
+  };
+  await Promise.all(
+    [...configSubscribers].map((queue) => Effect.runPromise(Queue.offer(queue, event))),
+  );
 }
 
 /** Delivers one domain event, such as a run or turn-item update, to the thread's subscription. */

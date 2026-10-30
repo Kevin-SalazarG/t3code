@@ -6,6 +6,7 @@ import {
   type OrchestrationV2Subagent,
   type ProviderDriverKind,
   type ProviderInstanceId,
+  type RunId,
   type ServerProvider,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
@@ -30,12 +31,14 @@ import {
   ZapIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "../../lib/contextWindow";
 import { cn } from "../../lib/utils";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -59,6 +62,7 @@ export interface ThreadDetailsUsageInput {
   readonly providerThreadId: OrchestrationV2ProviderTurn["providerThreadId"] | null;
   readonly providerTurns: readonly OrchestrationV2ProviderTurn[];
   readonly subagents: readonly OrchestrationV2Subagent[];
+  readonly settledRunId: RunId | null;
 }
 
 // The server caches Claude's account probe for five minutes, so polling faster only rereads it.
@@ -74,7 +78,9 @@ export function ThreadDetailsUsage({
   providerThreadId,
   providerTurns,
   subagents,
+  settledRunId,
 }: ThreadDetailsUsageInput) {
+  const cardRef = useRef<HTMLElement | null>(null);
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
   const provider = providers.find((entry) => entry.instanceId === providerInstanceId);
@@ -87,9 +93,9 @@ export function ThreadDetailsUsage({
           (entry) => entry.instanceId === providerInstanceId,
         )?.limits
       : undefined);
-  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
-    reportFailure: false,
-  });
+  const refreshProviders = useStableCallback(
+    useAtomCommand(serverEnvironment.refreshProviders, { reportFailure: false }),
+  );
   const checkedAt = provider?.usageLimits?.checkedAt;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls the server for the selected account's limits while the card is open
   useEffect(() => {
@@ -131,11 +137,27 @@ export function ThreadDetailsUsage({
 
   return (
     <ThreadDetailsSection
+      ref={cardRef}
       headingId="thread-details-usage-heading"
       title={accountName}
+      titleTooltip
       actions={
         provider?.auth.label ? (
-          <span className="truncate text-2xs text-muted-foreground">{provider.auth.label}</span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  tabIndex={0}
+                  className="block max-w-32 truncate text-2xs text-muted-foreground"
+                />
+              }
+            >
+              {provider.auth.label}
+            </TooltipTrigger>
+            <TooltipPopup anchor={cardRef} side="left" align="start" sideOffset={8}>
+              {provider.auth.label}
+            </TooltipPopup>
+          </Tooltip>
         ) : undefined
       }
     >
@@ -186,7 +208,13 @@ export function ThreadDetailsUsage({
           />
         ) : null}
         {showCost && provider ? (
-          <TodayCostRow environmentId={environmentId} provider={provider} providers={providers} />
+          <TodayCostRow
+            environmentId={environmentId}
+            provider={provider}
+            providers={providers}
+            usageUpdatedAt={turnUsage.latest?.updatedAt ?? null}
+            settledRunId={settledRunId}
+          />
         ) : null}
         {activeAgents > 0 ? (
           <UsageRow
@@ -243,13 +271,36 @@ function TodayCostRow({
   environmentId,
   provider,
   providers,
+  usageUpdatedAt,
+  settledRunId,
 }: {
   readonly environmentId: EnvironmentId;
   readonly provider: ServerProvider;
   readonly providers: readonly ServerProvider[];
+  readonly usageUpdatedAt: string | null;
+  readonly settledRunId: RunId | null;
 }) {
   const input = makeWindow(1);
   const result = useAtomValue(serverEnvironment.usageSummary({ environmentId, input }));
+  const refreshSummary = useStableCallback(() => {
+    appAtomRegistry.refresh(
+      serverEnvironment.usageSummary({ environmentId, input: makeWindow(1) }),
+    );
+  });
+  const version = JSON.stringify([provider.instanceId, usageUpdatedAt, settledRunId]);
+  const previousVersion = useRef(version);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- rescans transcripts after usage changes, coalescing bursts of provider events
+  useEffect(() => {
+    if (previousVersion.current === version) return;
+    previousVersion.current = version;
+    const timer = window.setTimeout(refreshSummary, 1_000);
+    return () => window.clearTimeout(timer);
+  }, [refreshSummary, version]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refreshes transcript usage from other threads while the card is visible
+  useEffect(() => {
+    const timer = window.setInterval(refreshSummary, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshSummary]);
   const summary = AsyncResult.getOrElse(result, () => null);
   const kind = usageKindOf(provider.driver);
   if (summary === null || kind === null) return null;
