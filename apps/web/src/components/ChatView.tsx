@@ -3930,7 +3930,9 @@ export default function ChatView(props: ChatViewProps) {
                     sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
                     contextWindow: usageProviderIsActive ? activeContextWindow : null,
                     environmentId: activeThread.environmentId,
-                    providerThreadId: usageProviderIsActive ? (activeProviderThread?.id ?? null) : null,
+                    providerThreadId: usageProviderIsActive
+                      ? (activeProviderThread?.id ?? null)
+                      : null,
                     providerTurns: usageProviderIsActive
                       ? (serverProjection?.providerTurns ?? EMPTY_PROVIDER_TURNS)
                       : EMPTY_PROVIDER_TURNS,

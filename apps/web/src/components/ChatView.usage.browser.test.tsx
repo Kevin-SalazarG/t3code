@@ -185,7 +185,6 @@ it("updates usage for the selected account without sending a message", async () 
   await expect.element(page.getByLabelText("Session: 80% left")).toBeVisible();
   await expect.element(page.getByLabelText("Context: 3k")).not.toBeInTheDocument();
 
-  await userEvent.click(page.getByRole("button", { name: /Claude Sonnet 4\.6/ }));
   await userEvent.click(
     page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Claude 2" }),
   );
@@ -193,7 +192,6 @@ it("updates usage for the selected account without sending a message", async () 
   await expect.element(page.getByRole("heading", { name: "Claude 2" })).toBeVisible();
   await expect.element(page.getByLabelText("Session: 70% left")).toBeVisible();
 
-  await userEvent.click(page.getByRole("button", { name: /Claude Sonnet 4\.6/ }));
   await userEvent.click(
     page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Codex" }),
   );
