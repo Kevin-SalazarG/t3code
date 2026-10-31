@@ -12,6 +12,7 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "servers", label: "Servers", defaultVisible: true },
   { id: "automations", label: "Automations", defaultVisible: true },
   { id: "lineage", label: "Lineage", defaultVisible: true },
+  { id: "sideChats", label: "Side chats", defaultVisible: true },
   { id: "usage", label: "Usage", defaultVisible: true },
 ] as const;
 
@@ -24,7 +25,7 @@ type ThreadDetailsItemSettings = Pick<
   "threadDetailsItems" | "threadDetailsUsageEnabled"
 >;
 
-// People who turned on the retired Labs toggle keep Usage until they change it here.
+// People who turned on the retired Labs toggle keep Usage until they change them here.
 function defaultVisible(item: ThreadDetailsItem, settings: ThreadDetailsItemSettings) {
   return (item.id === "usage" && settings.threadDetailsUsageEnabled) || item.defaultVisible;
 }
@@ -54,7 +55,7 @@ export function isDefaultThreadDetailsVisibility(visibility: ThreadDetailsVisibi
   return THREAD_DETAILS_ITEMS.every((item) => visibility[item.id] === item.defaultVisible);
 }
 
-/** Also clears the retired Labs flag, so Usage returns to off. */
+/** Also clears the retired Labs flag, so Usage and Context return to off. */
 export const RESET_THREAD_DETAILS_ITEMS = {
   threadDetailsItems: {},
   threadDetailsUsageEnabled: false,
