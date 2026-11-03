@@ -37,7 +37,12 @@ it("prepares macOS x64 cache on an ARM64 build host", async () => {
     const helper = NodePath.join(archive, "apps/desktop/dist-electron/serverCompileCache.cjs");
     NodeFS.mkdirSync(dist, { recursive: true });
     NodeFS.mkdirSync(NodePath.dirname(helper), { recursive: true });
-    NodeFS.writeFileSync(NodePath.join(dist, "binCli-fixture.mjs"), "export const answer = 42;");
+    NodeFS.writeFileSync(
+      NodePath.join(dist, "binCli-fixture.mjs"),
+      `import { createRequire } from "node:module";
+const require = createRequire(typeof __filename === "string" ? __filename : import.meta.url);
+export const answer = require("node:path").sep;`,
+    );
     NodeFS.writeFileSync(
       helper,
       `module.exports = require(${JSON.stringify(NodeURL.fileURLToPath(new URL("./server-compile-cache.ts", import.meta.url)))});`,

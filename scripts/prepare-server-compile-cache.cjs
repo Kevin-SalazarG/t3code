@@ -55,7 +55,7 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
       executable,
       [
         "-e",
-        `require(${JSON.stringify(helper)}).generatePreparedServerCache(${JSON.stringify(resources)}).then(()=>process.exit(0),e=>{console.error(e);process.exit(1)})`,
+        `delete globalThis.__filename; require(${JSON.stringify(helper)}).generatePreparedServerCache(${JSON.stringify(resources)}).then(()=>process.exit(0),e=>{console.error(e);process.exit(1)})`,
       ],
       { env, encoding: "utf8", timeout: 120000 },
     );
