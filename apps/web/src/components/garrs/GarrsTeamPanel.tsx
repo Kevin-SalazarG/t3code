@@ -1,3 +1,4 @@
+import { PreparationEvidence, VerificationEvidence } from "./GarrsEvidence";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type {
@@ -791,7 +792,10 @@ function GarrsWorkItemDetailView({
               </MenuItem>
             ) : null}
             {controls.resume ? (
-              <MenuItem disabled={disabled} onClick={() => void run({ type: "resume" })}>
+              <MenuItem
+                disabled={disabled || workItem.resumeRequested === true}
+                onClick={() => void run({ type: "resume" })}
+              >
                 Resume
               </MenuItem>
             ) : null}
@@ -841,6 +845,16 @@ function GarrsWorkItemDetailView({
             expandLabel="Show the full objective"
           />
         </div>
+
+        {workItem.resumeRequested ? (
+          <Alert>
+            <AlertTitle>Continuation recorded</AlertTitle>
+            <AlertDescription>
+              Waiting for pending stops to finish. The existing plan continues automatically within
+              its limits.
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         {awaitingPlan ? (
           <Alert variant="warning">
@@ -1026,6 +1040,14 @@ function GarrsWorkItemDetailView({
                   <ReviewItem key={review.id} review={review} agentName={agentName} />
                 ))}
               </ul>
+            </Section>
+          ) : null}
+
+          {(detail.preparation?.length ?? 0) > 0 ? (
+            <Section title="Checkout preparation" defaultExpanded={false}>
+              <div className="px-2">
+                <PreparationEvidence checks={detail.preparation ?? []} />
+              </div>
             </Section>
           ) : null}
 
@@ -1519,6 +1541,9 @@ function ArtifactItem({
         <Muted>{artifact.workspace.changedFiles.length} changed files</Muted>
       ) : null}
       {artifact.evidence.length > 0 ? <TextList items={artifact.evidence} /> : null}
+      {(artifact.verification?.length ?? 0) > 0 ? (
+        <VerificationEvidence checks={artifact.verification ?? []} />
+      ) : null}
     </li>
   );
 }

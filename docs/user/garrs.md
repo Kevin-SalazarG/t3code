@@ -134,6 +134,19 @@ reassign a task to another model, and accept delivered work. **Pause** stops new
 attempts from starting; attempts already running finish. **Cancel** asks running
 attempts to stop, and each one shows as cancelled once its provider confirms.
 
+Use **Resume**, or ask Garras to continue, to keep the existing plan and completed
+results after an interruption. If a stop is still pending, continuation is recorded
+and starts automatically after confirmation. It preserves model choices, approval
+requirements and attempt limits. Ask for a revision when requirements change.
+Direct messages can continue an active member's task; stopped or completed task
+threads require continuation through Garras or the team panel.
+
+The work item shows checkout preparation and the validation checks each member
+reports. Missing dependencies and dependencies linked outside the checkout are
+shown before checks run. Setup scripts are not run automatically. A completed
+member task does not mean integration or independent review has passed; required
+checks that Copito cannot verify keep the review blocked.
+
 Pixi, Botas, Asta and Copito can request bounded, read-only help for a specific task. The
 temporary helper and its requesting task appear in the team activity and usage.
 Garrs checks deadlines each minute and asks the provider to stop an expired

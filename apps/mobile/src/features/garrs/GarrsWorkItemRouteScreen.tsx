@@ -140,6 +140,27 @@ function WorkItemContent(props: {
         />
       ) : null}
 
+      {workItem.resumeRequested ? (
+        <Notice
+          tone="default"
+          message="Continuation recorded. The existing plan continues automatically after pending stops finish, within its limits."
+        />
+      ) : null}
+
+      {(detail.preparation?.length ?? 0) > 0 ? (
+        <SettingsSection title="Checkout preparation">
+          {detail.preparation?.map((check, index) => (
+            <Block key={`${check.projectId}:${check.message}`} first={index === 0}>
+              <Text
+                textRole="footnote"
+                className="text-foreground"
+                selectable
+              >{`${humanize(check.status)} · ${check.message}`}</Text>
+            </Block>
+          ))}
+        </SettingsSection>
+      ) : null}
+
       {detail.remaining.length > 0 ? (
         <SettingsSection title="Still blocking delivery">
           {detail.remaining.map((entry, index) => (
@@ -175,7 +196,8 @@ function WorkItemContent(props: {
           <ListActionRow
             icon="play"
             label="Resume"
-            disabled={control.busy}
+            description="Continue the existing plan and completed results."
+            disabled={control.busy || workItem.resumeRequested === true}
             loading={control.pendingKey === "resume"}
             onPress={() => void control.run("resume", { type: "resume" })}
           />
@@ -266,6 +288,29 @@ function WorkItemContent(props: {
               control={control}
               onOpenThread={openThread}
             />
+          ))}
+        </SettingsSection>
+      ) : null}
+
+      {detail.artifacts.length > 0 ? (
+        <SettingsSection title="Results reported by the team">
+          {detail.artifacts.map((artifact, index) => (
+            <Block key={artifact.id} first={index === 0}>
+              <Text textRole="body" className="text-foreground" selectable>
+                {artifact.summary}
+              </Text>
+              <Text textRole="footnote" className="text-foreground-muted" selectable>
+                {artifact.body}
+              </Text>
+              {artifact.verification?.map((check) => (
+                <Text
+                  key={`${check.name}:${check.status}:${check.evidence}`}
+                  textRole="footnote"
+                  className="text-foreground-muted"
+                  selectable
+                >{`${check.name} · ${humanize(check.status)}: ${check.evidence}`}</Text>
+              ))}
+            </Block>
           ))}
         </SettingsSection>
       ) : null}

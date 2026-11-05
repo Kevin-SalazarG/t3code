@@ -290,7 +290,7 @@ export function workItemControls(status: GarrsWorkItemStatus): GarrsWorkItemCont
   const open = !TERMINAL_WORK_ITEM_STATUSES.has(status);
   return {
     pause: status === "planning" || status === "active" || status === "in_review",
-    resume: status === "paused" || status === "blocked",
+    resume: status === "paused" || status === "blocked" || status === "cancelled",
     cancel: open,
     accept: status === "delivered",
     waiveReview: status === "in_review" || status === "blocked",

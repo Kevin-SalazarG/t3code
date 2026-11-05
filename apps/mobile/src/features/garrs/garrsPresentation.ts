@@ -58,7 +58,7 @@ export function workItemControls(status: GarrsWorkItemStatus) {
   const terminal = TERMINAL_WORK.has(status);
   return {
     pause: !terminal && status !== "paused",
-    resume: status === "paused" || status === "blocked",
+    resume: status === "paused" || status === "blocked" || status === "cancelled",
     cancel: !terminal,
     accept: status === "delivered",
   };
