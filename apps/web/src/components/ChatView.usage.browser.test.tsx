@@ -74,10 +74,11 @@ function provider(instanceId: string, driver: string, displayName: string, usedP
   });
 }
 
-it("updates usage for the selected account without sending a message", async () => {
-  const original = threadWithHistory("usage-switch", 1);
+async function setup(id: string) {
+  await using stack = new AsyncDisposableStack();
+  const original = threadWithHistory(id, 1);
   const compaction = {
-    id: TurnItemId.make("usage-switch-compaction"),
+    id: TurnItemId.make(`${id}-compaction`),
     threadId: original.id,
     runId: original.runs[0]?.id ?? null,
     nodeId: null,
@@ -107,37 +108,39 @@ it("updates usage for the selected account without sending a message", async () 
     provider("claude-one", "claudeAgent", "Claude 1", 20),
     provider("claude-two", "claudeAgent", "Claude 2", 30),
   ];
-  using _environment = installFakeEnvironment([thread], {
-    providers,
-    usageSummary: (input) => ({
-      contractVersion: USAGE_CONTRACT_VERSION,
-      readAt: "2026-03-18T09:00:00.000Z",
-      ...input,
-      buckets: [
-        {
-          day: input.sinceDay,
-          provider: "codex",
-          model: "gpt-5.4",
-          totals: {
-            uncachedInputTokens: 0,
-            cachedInputTokens: 0,
-            cacheCreationTokens: 0,
-            outputTokens: 0,
-            reasoningTokens: 0,
+  stack.use(
+    installFakeEnvironment([thread], {
+      providers,
+      usageSummary: (input) => ({
+        contractVersion: USAGE_CONTRACT_VERSION,
+        readAt: "2026-03-18T09:00:00.000Z",
+        ...input,
+        buckets: [
+          {
+            day: input.sinceDay,
+            provider: "codex",
+            model: "gpt-5.4",
+            totals: {
+              uncachedInputTokens: 0,
+              cachedInputTokens: 0,
+              cacheCreationTokens: 0,
+              outputTokens: 0,
+              reasoningTokens: 0,
+            },
+            costUsd: cost,
+            cacheSavingsUsd: 0,
+            costSource: "modelPriced",
+            records: 1,
+            unpricedRecords: 0,
+            sessions: 1,
           },
-          costUsd: cost,
-          cacheSavingsUsd: 0,
-          costSource: "modelPriced",
-          records: 1,
-          unpricedRecords: 0,
-          sessions: 1,
-        },
-      ],
-      sources: [],
-      pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 1 },
-      scanDurationMs: 0,
+        ],
+        sources: [],
+        pricing: { status: "cached", source: "test", fetchedAt: null, knownModels: 1 },
+        scanDurationMs: 0,
+      }),
     }),
-  });
+  );
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -148,7 +151,7 @@ it("updates usage for the selected account without sending a message", async () 
   );
   await router.load();
   // AppRoot owns the application router.
-  await using _screen = await render(<AppRoot router={router} />, { router: false });
+  stack.use(await render(<AppRoot router={router} />, { router: false }));
   await expect
     .element(page.getByText(`Answer 0 for ${thread.id}.`, { exact: false }))
     .toBeVisible();
@@ -159,6 +162,51 @@ it("updates usage for the selected account without sending a message", async () 
   ) {
     await userEvent.click(page.getByRole("button", { name: "Toggle thread details panel" }));
   }
+  return {
+    stack: stack.move(),
+    thread,
+    compaction,
+    providers,
+    setCost: (value: number) => {
+      cost = value;
+    },
+  };
+}
+
+it("updates usage for the selected account without sending a message", async () => {
+  const fixture = await setup("usage-switch");
+  await using _stack = fixture.stack;
+  await expect.element(page.getByRole("heading", { name: "Codex" })).toBeVisible();
+  await userEvent.click(page.getByRole("button", { name: "GPT-5.4" }));
+  await userEvent.click(
+    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Claude 1" }),
+  );
+  await userEvent.click(page.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+  await expect.element(page.getByRole("button", { name: /Claude Sonnet 4\.6/ })).toBeVisible();
+  expect(document.querySelector("#thread-details-usage-heading")?.textContent).toBe("Claude 1");
+  await expect.element(page.getByLabelText("Session: 80% left")).toBeVisible();
+  await expect.element(page.getByLabelText("Context: 2k")).not.toBeInTheDocument();
+
+  await userEvent.click(
+    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Claude 2" }),
+  );
+  await userEvent.click(page.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+  await expect.element(page.getByRole("heading", { name: "Claude 2" })).toBeVisible();
+  await expect.element(page.getByLabelText("Session: 70% left")).toBeVisible();
+
+  await userEvent.click(
+    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Codex" }),
+  );
+  await userEvent.click(page.getByRole("option", { name: /GPT-5\.4/ }));
+  await expect.element(page.getByRole("heading", { name: "Codex" })).toBeVisible();
+  await expect.element(page.getByLabelText("Session: 90% left")).toBeVisible();
+  await expect.element(page.getByLabelText("Context: 2k")).toBeVisible();
+});
+
+it("refreshes usage and cost as provider and thread state changes", async () => {
+  const fixture = await setup("usage-refresh");
+  await using _stack = fixture.stack;
+  const { thread, compaction, providers, setCost } = fixture;
   await expect.element(page.getByRole("heading", { name: "Codex" })).toBeVisible();
   await expect.element(page.getByLabelText("Session: 90% left")).toBeVisible();
   await expect.element(page.getByLabelText("Context: 2k")).toBeVisible();
@@ -175,36 +223,11 @@ it("updates usage for the selected account without sending a message", async () 
   );
   await expect.element(page.getByLabelText("Context: 3k")).toBeVisible();
 
-  await userEvent.click(page.getByRole("button", { name: "GPT-5.4" }));
-  await userEvent.click(
-    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Claude 1" }),
-  );
-  await userEvent.click(page.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
-  await expect.element(page.getByRole("button", { name: /Claude Sonnet 4\.6/ })).toBeVisible();
-  expect(document.querySelector("#thread-details-usage-heading")?.textContent).toBe("Claude 1");
-  await expect.element(page.getByLabelText("Session: 80% left")).toBeVisible();
-  await expect.element(page.getByLabelText("Context: 3k")).not.toBeInTheDocument();
-
-  await userEvent.click(
-    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Claude 2" }),
-  );
-  await userEvent.click(page.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
-  await expect.element(page.getByRole("heading", { name: "Claude 2" })).toBeVisible();
-  await expect.element(page.getByLabelText("Session: 70% left")).toBeVisible();
-
-  await userEvent.click(
-    page.getByRole("toolbar", { name: "Providers" }).getByRole("button", { name: "Codex" }),
-  );
-  await userEvent.click(page.getByRole("option", { name: /GPT-5\.4/ }));
-  await expect.element(page.getByRole("heading", { name: "Codex" })).toBeVisible();
-  await expect.element(page.getByLabelText("Session: 78% left")).toBeVisible();
-  await expect.element(page.getByLabelText("Context: 3k")).toBeVisible();
-
   {
     using _timers = fakeTimers();
     const run = runningRun(thread.id, "new-run", 2, "new-user");
     await act(() => emitThreadEvent(thread.id, { type: "run.created", payload: run }));
-    cost = 55;
+    setCost(55);
     await act(() =>
       emitThreadEvent(thread.id, {
         type: "run.updated",
