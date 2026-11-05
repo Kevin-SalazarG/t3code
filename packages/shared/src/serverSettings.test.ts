@@ -992,3 +992,18 @@ describe("synchronized model preferences", () => {
     ).toEqual([{ provider: otherProvider, model: "sol" }]);
   });
 });
+
+it("keeps integrations isolated by project and replaces a cleared connection", () => {
+  const config = { supabase: {}, github: null };
+  const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+    projectIntegrations: { [ProjectId.make("integrations-a")]: config },
+  });
+  const second = applyServerSettingsPatch(first, {
+    projectIntegrations: { [ProjectId.make("integrations-b")]: config },
+  });
+  expect(Object.keys(second.projectIntegrations)).toEqual(["integrations-a", "integrations-b"]);
+  const removed = applyServerSettingsPatch(second, {
+    projectIntegrations: { [ProjectId.make("integrations-a")]: null },
+  });
+  expect(removed.projectIntegrations).toEqual({ "integrations-b": config });
+});

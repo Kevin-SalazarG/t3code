@@ -534,6 +534,10 @@
     "./provider-instance-ids": {
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
+    },
+    "./state/project-integrations": {
+      "types": "./src/state/project-integrations.ts",
+      "default": "./src/state/project-integrations.ts"
     }
   },
   "scripts": {

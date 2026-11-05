@@ -103,6 +103,35 @@ it.effect.each(["approve_commit", "approve_push"] as const)(
 );
 
 describe("command permissions", () => {
+  it.effect.each([
+    WS_METHODS.projectIntegrationsUpdate,
+    WS_METHODS.projectIntegrationsSignIn,
+    WS_METHODS.projectIntegrationsWaitForSignIn,
+    WS_METHODS.projectIntegrationsCancelSignIn,
+  ])("requires destination settings permission for %s", (tag) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const command = createCommandPermissions(runtime, tag);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* command.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
+          AuthSettingsWriteScope,
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthSettingsWriteScope],
+            permissions: [AuthSettingsWriteScope],
+          }),
+        );
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("requires the destination read grant to refresh providers", () =>
     Effect.scoped(
       Effect.gen(function* () {

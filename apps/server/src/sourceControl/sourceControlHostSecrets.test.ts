@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { DeviceHostId, SecretProviderId, UsageLimitSourceId } from "@t3tools/contracts";
+import { ProjectId, DeviceHostId, SecretProviderId, UsageLimitSourceId } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
 
@@ -150,6 +150,25 @@ it.effect("reads a collected reference again once it is invalidated", () =>
         accessToken: source("expo#token"),
       },
     ];
+    const projectIntegrations = {
+      [ProjectId.make("linked-project")]: {
+        supabase: {
+          db: {
+            label: "Database",
+            accessToken: source("supabase#token"),
+            project: null,
+            branch: null,
+          },
+        },
+        github: {
+          account: "developer",
+          repository: "acme/app",
+          accessToken: source("project-github#token"),
+        },
+      },
+    };
+    cache.set("supabase#token", "stale");
+    cache.set("project-github#token", "stale");
     cache.set("cliproxy#key", "stale");
     cache.set("expo#token", "stale");
     assert.deepEqual((yield* read()).bitbucket, {
@@ -159,10 +178,17 @@ it.effect("reads a collected reference again once it is invalidated", () =>
     current = "rotated";
     yield* invalidateSettingsSecrets(
       resolver,
-      Effect.succeed({ sourceControlHosts: hosts, usageLimitSources, easDeviceHosts }),
+      Effect.succeed({
+        sourceControlHosts: hosts,
+        usageLimitSources,
+        easDeviceHosts,
+        projectIntegrations,
+      }),
     );
     assert.isFalse(cache.has("cliproxy#key"));
     assert.isFalse(cache.has("expo#token"));
+    assert.isFalse(cache.has("supabase#token"));
+    assert.isFalse(cache.has("project-github#token"));
     assert.deepEqual((yield* read()).bitbucket, {
       email: "me@example.test",
       accessToken: "rotated",

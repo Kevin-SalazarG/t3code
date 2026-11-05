@@ -1,3 +1,4 @@
+import { ProjectIntegrationsSettings } from "./ProjectIntegrationsSettings";
 import { useComposerMenuState } from "../chat/useComposerMenuState";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
@@ -655,6 +656,18 @@ function ProjectDetail({
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
+        {group.memberProjects.map((member) => (
+          <ProjectIntegrationsSettings
+            key={`${member.environmentId}:${member.id}`}
+            environmentId={member.environmentId}
+            projectId={member.id}
+            label={
+              group.memberProjects.length > 1
+                ? `${member.environmentLabel ?? member.environmentId} · ${member.workspaceRoot}`
+                : undefined
+            }
+          />
+        ))}
         {checkoutChoices}
         <SettingsSection title="Danger">
           <SettingsRow

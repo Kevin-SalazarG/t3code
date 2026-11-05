@@ -1,3 +1,4 @@
+import { ProjectIntegrations } from "./projectIntegrations.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -1231,6 +1232,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
 
+  projectIntegrations: Schema.Record(ProjectId, ProjectIntegrations).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   projectSettingsOverrides: Schema.Record(
     ProjectId,
     keepUnknownOverrideKeys(ProjectSettingsOverrides),
@@ -1629,6 +1633,9 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   fallbackModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */
+  projectIntegrations: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectIntegrations)),
+  ),
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(
       ProjectId,

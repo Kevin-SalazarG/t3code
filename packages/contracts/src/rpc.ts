@@ -1,4 +1,19 @@
 import {
+  ProjectIntegrationSignInInput,
+  ProjectIntegrationSignInPrompt,
+  ProjectIntegrationSignInSession,
+  GitHubIntegrationCatalog,
+  GitHubIntegrationCatalogInput,
+} from "./projectIntegrations.ts";
+import {
+  ProjectIntegrations,
+  ProjectIntegrationsInput,
+  ProjectIntegrationsUpdateInput,
+  SupabaseCatalog,
+  SupabaseCatalogInput,
+  ProjectIntegrationsError,
+} from "./projectIntegrations.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -572,6 +587,13 @@ export const WS_METHODS = {
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
+  projectIntegrationsSignIn: "projectIntegrations.signIn",
+  projectIntegrationsWaitForSignIn: "projectIntegrations.waitForSignIn",
+  projectIntegrationsCancelSignIn: "projectIntegrations.cancelSignIn",
+  projectIntegrationsGithubCatalog: "projectIntegrations.githubCatalog",
+  projectIntegrationsGet: "projectIntegrations.get",
+  projectIntegrationsUpdate: "projectIntegrations.update",
+  projectIntegrationsCatalog: "projectIntegrations.catalog",
   garrsGetConfig: "garrs.getConfig",
   garrsUpdateConfig: "garrs.updateConfig",
   garrsGetProjectBinding: "garrs.getProjectBinding",
@@ -2011,6 +2033,47 @@ const WsScheduledTasksGetWebhookDeliveryRpc = Rpc.make(
   },
 );
 
+const ProjectIntegrationsRpcError = Schema.Union([
+  ProjectIntegrationsError,
+  EnvironmentAuthorizationError,
+]);
+const WsProjectIntegrationsSignInRpc = Rpc.make(WS_METHODS.projectIntegrationsSignIn, {
+  payload: ProjectIntegrationSignInInput,
+  success: ProjectIntegrationSignInPrompt,
+  error: ProjectIntegrationsRpcError,
+});
+const WsProjectIntegrationsWaitForSignInRpc = Rpc.make(
+  WS_METHODS.projectIntegrationsWaitForSignIn,
+  { payload: ProjectIntegrationSignInSession, error: ProjectIntegrationsRpcError },
+);
+const WsProjectIntegrationsCancelSignInRpc = Rpc.make(WS_METHODS.projectIntegrationsCancelSignIn, {
+  payload: ProjectIntegrationSignInSession,
+  error: ProjectIntegrationsRpcError,
+});
+const WsProjectIntegrationsGithubCatalogRpc = Rpc.make(
+  WS_METHODS.projectIntegrationsGithubCatalog,
+  {
+    payload: GitHubIntegrationCatalogInput,
+    success: GitHubIntegrationCatalog,
+    error: ProjectIntegrationsRpcError,
+  },
+);
+const WsProjectIntegrationsGetRpc = Rpc.make(WS_METHODS.projectIntegrationsGet, {
+  payload: ProjectIntegrationsInput,
+  success: ProjectIntegrations,
+  error: ProjectIntegrationsRpcError,
+});
+const WsProjectIntegrationsUpdateRpc = Rpc.make(WS_METHODS.projectIntegrationsUpdate, {
+  payload: ProjectIntegrationsUpdateInput,
+  success: ProjectIntegrations,
+  error: ProjectIntegrationsRpcError,
+});
+const WsProjectIntegrationsCatalogRpc = Rpc.make(WS_METHODS.projectIntegrationsCatalog, {
+  payload: SupabaseCatalogInput,
+  success: SupabaseCatalog,
+  error: ProjectIntegrationsRpcError,
+});
+
 const GarrsRpcError = Schema.Union([GarrsError, EnvironmentAuthorizationError]);
 const WsGarrsGetConfigRpc = Rpc.make(WS_METHODS.garrsGetConfig, {
   payload: Schema.Struct({}),
@@ -2100,6 +2163,13 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
+  WsProjectIntegrationsSignInRpc,
+  WsProjectIntegrationsWaitForSignInRpc,
+  WsProjectIntegrationsCancelSignInRpc,
+  WsProjectIntegrationsGithubCatalogRpc,
+  WsProjectIntegrationsGetRpc,
+  WsProjectIntegrationsUpdateRpc,
+  WsProjectIntegrationsCatalogRpc,
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,

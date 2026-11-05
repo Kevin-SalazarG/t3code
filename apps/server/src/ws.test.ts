@@ -1,3 +1,5 @@
+import * as ProjectIntegrationAuth from "./project/ProjectIntegrationAuth.ts";
+import * as ProjectIntegrations from "./project/ProjectIntegrations.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -723,6 +725,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(DatabaseStorage.DatabaseStorage)({}),
   Layer.mock(TerminalManager.TerminalManager)({}),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+  Layer.mock(ProjectIntegrationAuth.ProjectIntegrationAuth)({}),
+  Layer.mock(ProjectIntegrations.ProjectIntegrations)({}),
   Layer.mock(GarrsService.GarrsService)({}),
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),

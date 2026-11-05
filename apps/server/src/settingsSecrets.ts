@@ -3,6 +3,8 @@ import {
   ClaudeSettings,
   CodexSettings,
   EasDeviceHostConfig,
+  SupabaseProjectConnection,
+  GitHubProjectConnection,
   type ProviderInstanceConfig,
   type ServerSettings,
   type SettingsSecretValue,
@@ -230,8 +232,35 @@ function mapSecretFieldGroups(
       ) as SimlockDeviceHostConfig,
   );
 
+  const projectIntegrations = Object.fromEntries(
+    Object.entries(settings.projectIntegrations).map(([projectId, config]) => [
+      projectId,
+      {
+        supabase: Object.fromEntries(
+          Object.entries(config.supabase).map(([id, connection]) => [
+            id,
+            mapFields(
+              connection,
+              secretSettingsFields(SupabaseProjectConnection),
+              (field) =>
+                `project-integration-${encode(projectId)}-supabase-${encode(id)}-${encode(field)}`,
+            ) as typeof connection,
+          ]),
+        ),
+        github:
+          config.github === null
+            ? null
+            : (mapFields(
+                config.github,
+                secretSettingsFields(GitHubProjectConnection),
+                (field) => `project-integration-${encode(projectId)}-github-${encode(field)}`,
+              ) as typeof config.github),
+      },
+    ]),
+  );
   return {
     ...settings,
+    projectIntegrations,
     providerInstances,
     sourceControlHosts,
     usageLimitSources,

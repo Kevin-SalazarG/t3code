@@ -2,6 +2,7 @@ import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
+  projectIntegrationContext,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -162,6 +163,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const garrs = yield* Effect.serviceOption(GarrsStore.GarrsStore);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
@@ -635,6 +637,11 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      const projectConfig = (yield* serverSettings.getSettings.pipe(
+        Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })),
+      )).projectIntegrations[projection.thread.projectId];
+      const integrationContext =
+        projectConfig === undefined ? "" : projectIntegrationContext(projectConfig);
       const { worktreePath, branch } = projection.thread;
       if (worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
@@ -1624,7 +1631,12 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const context = [
+            delivery.context,
+            sideChatContext,
+            restartNote,
+            compact ? "" : integrationContext,
+          ]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;

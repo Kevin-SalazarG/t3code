@@ -1,5 +1,7 @@
 import {
   isSecretReference,
+  SupabaseProjectConnection,
+  GitHubProjectConnection,
   secretReferencesInSettings,
   secretSettingsFields,
   type SecretReference,
@@ -113,7 +115,8 @@ const collectEasSecretReferences = (
 export const invalidateSettingsSecrets = Effect.fn("SettingsSecrets.invalidate")(function* <E>(
   resolver: SecretResolver.SecretResolver["Service"],
   settings: Effect.Effect<
-    Pick<ServerSettings, "sourceControlHosts" | "usageLimitSources" | "easDeviceHosts">,
+    Pick<ServerSettings, "sourceControlHosts" | "usageLimitSources" | "easDeviceHosts"> &
+      Partial<Pick<ServerSettings, "projectIntegrations">>,
     E
   >,
 ) {
@@ -122,6 +125,16 @@ export const invalidateSettingsSecrets = Effect.fn("SettingsSecrets.invalidate")
       ...collectSourceControlHostSecretReferences(current.sourceControlHosts),
       ...collectUsageLimitSecretReferences(current.usageLimitSources),
       ...collectEasSecretReferences(current.easDeviceHosts),
+      ...Object.values(current.projectIntegrations ?? {}).flatMap((config) => [
+        ...Object.values(config.supabase).flatMap((connection) =>
+          secretReferencesInSettings(SupabaseProjectConnection, connection).map(
+            ({ reference }) => reference,
+          ),
+        ),
+        ...secretReferencesInSettings(GitHubProjectConnection, config.github).map(
+          ({ reference }) => reference,
+        ),
+      ]),
     ]),
     Effect.orElseSucceed(() => undefined),
   );

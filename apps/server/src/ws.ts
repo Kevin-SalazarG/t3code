@@ -1,3 +1,5 @@
+import * as ProjectIntegrationAuth from "./project/ProjectIntegrationAuth.ts";
+import * as ProjectIntegrations from "./project/ProjectIntegrations.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -1406,6 +1408,8 @@ export const layerWsRpc = (
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const integrationAuth = yield* ProjectIntegrationAuth.ProjectIntegrationAuth;
+      const integrations = yield* ProjectIntegrations.ProjectIntegrations;
       const garrs = yield* GarrsService.GarrsService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
@@ -2294,6 +2298,13 @@ export const layerWsRpc = (
               Effect.as(commandOutputHub.subscribe(input)),
             ),
           ),
+        [WS_METHODS.projectIntegrationsSignIn]: (input) => integrationAuth.start(input),
+        [WS_METHODS.projectIntegrationsWaitForSignIn]: (input) => integrationAuth.wait(input),
+        [WS_METHODS.projectIntegrationsCancelSignIn]: (input) => integrationAuth.cancel(input),
+        [WS_METHODS.projectIntegrationsGithubCatalog]: (input) => integrations.githubCatalog(input),
+        [WS_METHODS.projectIntegrationsGet]: ({ projectId }) => integrations.get(projectId),
+        [WS_METHODS.projectIntegrationsUpdate]: (input) => integrations.update(input),
+        [WS_METHODS.projectIntegrationsCatalog]: (input) => integrations.catalog(input),
         [WS_METHODS.garrsGetConfig]: () => garrs.getConfig(),
         [WS_METHODS.garrsUpdateConfig]: (input) => garrs.updateConfig(input),
         [WS_METHODS.garrsGetProjectBinding]: (input) => garrs.getProjectBinding(input.projectId),
@@ -3458,6 +3469,8 @@ export const layer = Layer.unwrap(
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+    const integrations = yield* ProjectIntegrations.ProjectIntegrations;
+    const integrationAuth = yield* ProjectIntegrationAuth.ProjectIntegrationAuth;
     const garrsService = yield* GarrsService.GarrsService;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
@@ -3549,6 +3562,10 @@ export const layer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(
+                Layer.succeed(ProjectIntegrationAuth.ProjectIntegrationAuth, integrationAuth),
+              ),
+              Layer.provide(Layer.succeed(ProjectIntegrations.ProjectIntegrations, integrations)),
               Layer.provide(Layer.succeed(GarrsService.GarrsService, garrsService)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(

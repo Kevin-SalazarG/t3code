@@ -1675,6 +1675,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     Effect.sync(() => {
       // Shipped clients decode these as strings. Each must be covered by the older-client case above.
       assert.deepEqual(strictSecretReferencePaths(ServerSettings.ast), [
+        "projectIntegrations.*.supabase.*.accessToken",
+        "projectIntegrations.*.supabase.*.oauthSession",
+        "projectIntegrations.*.github.accessToken",
+        "projectIntegrations.*.github.oauthSession",
         "easDeviceHosts.[].accessToken",
         "usageLimitSources.*.managementKey",
       ]);
@@ -2789,4 +2793,92 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
       }).pipe(Effect.provide(layerServerSettings(policy))),
     );
   },
+);
+
+it.effect("vaults project integration credentials and preserves redacted edits", () =>
+  Effect.gen(function* () {
+    const service = yield* ServerSettingsModule.ServerSettingsService;
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* ServerConfig.ServerConfig;
+    const id = ProjectId.make("integration-secrets");
+    yield* service.updateSettings({
+      projectIntegrations: {
+        [id]: {
+          supabase: {
+            primary: {
+              label: "Database",
+              accessToken: "supabase-test-credential",
+              oauthSession: "oauth-private-refresh-session",
+              project: null,
+              branch: null,
+            },
+          },
+          github: {
+            repository: "acme/app",
+            account: "acme-dev",
+            accessToken: "github-test-credential",
+          },
+        },
+      },
+    });
+    const settings = yield* service.getSettings;
+    assert.equal(
+      settings.projectIntegrations[id]?.supabase.primary?.accessToken,
+      "supabase-test-credential",
+    );
+    const client = ServerSettingsModule.redactServerSettingsForClient(settings, {
+      secretReferences: true,
+    });
+    assert.equal(client.projectIntegrations[id]?.supabase.primary?.accessToken, SECRET_REDACTED);
+    assert.equal(client.projectIntegrations[id]?.github?.accessToken, SECRET_REDACTED);
+    const disk = yield* fs.readFileString(config.settingsPath);
+    assert.notInclude(disk, "supabase-test-credential");
+    assert.notInclude(disk, "oauth-private-refresh-session");
+    assert.equal(client.projectIntegrations[id]?.supabase.primary?.oauthSession, SECRET_REDACTED);
+    assert.notInclude(disk, "github-test-credential");
+    yield* service.updateSettings({
+      projectIntegrations: { [id]: client.projectIntegrations[id]! },
+    });
+    assert.equal(
+      (yield* service.getSettings).projectIntegrations[id]?.github?.accessToken,
+      "github-test-credential",
+    );
+    const reference = {
+      provider: SecretProviderId.make("personal"),
+      reference: "op://vault/project/token",
+    };
+    yield* service.updateSettings({
+      projectIntegrations: {
+        [id]: {
+          ...client.projectIntegrations[id]!,
+          supabase: {
+            primary: {
+              ...client.projectIntegrations[id]!.supabase.primary!,
+              accessToken: reference,
+            },
+          },
+        },
+      },
+    });
+    const referenced = yield* service.getSettings;
+    const legacy = ServerSettingsModule.redactServerSettingsForClient(referenced, {
+      secretReferences: false,
+    });
+    assert.equal(legacy.projectIntegrations[id]?.supabase.primary?.accessToken, SECRET_REDACTED);
+    yield* service.updateSettings({
+      projectIntegrations: { [id]: legacy.projectIntegrations[id]! },
+    });
+    assert.deepEqual(
+      (yield* service.getSettings).projectIntegrations[id]?.supabase.primary?.accessToken,
+      reference,
+    );
+    yield* service.updateSettings({ projectIntegrations: { [id]: null } });
+    assert.isUndefined((yield* service.getSettings).projectIntegrations[id]);
+  }).pipe(
+    Effect.provide(
+      layerServerSettings().pipe(
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      ),
+    ),
+  ),
 );

@@ -1,3 +1,4 @@
+import { ProjectIntegrationsSection } from "./ProjectIntegrationsSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -351,6 +352,15 @@ function ProjectOverviewContent(props: {
           </View>
         </View>
       </SettingsSection>
+
+      {props.members.map((member) => (
+        <ProjectIntegrationsSection
+          key={`${member.environmentId}:${member.id}`}
+          environmentId={member.environmentId}
+          projectId={member.id}
+          label={props.members.length > 1 ? member.workspaceRoot : undefined}
+        />
+      ))}
 
       {canOrganize ? (
         <SettingsSection title="Organize">

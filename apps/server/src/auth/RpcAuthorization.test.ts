@@ -31,6 +31,23 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("separates integration reads from settings edits", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectIntegrationsGet)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectIntegrationsUpdate)).toBe(
+      AuthSettingsWriteScope,
+    );
+    for (const tag of [
+      WS_METHODS.projectIntegrationsSignIn,
+      WS_METHODS.projectIntegrationsWaitForSignIn,
+      WS_METHODS.projectIntegrationsCancelSignIn,
+    ])
+      expect(requiredScopeForRpcMethod(tag)).toBe(AuthSettingsWriteScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectIntegrationsCatalog)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });

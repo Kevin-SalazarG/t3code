@@ -184,3 +184,22 @@ assignments after reported usage reaches the limit; an active turn can exceed it
 - Git-ignored files are outside review state unless explicitly configured as rules.
 - The team's tool is visible to every agent in T3 Code; the server refuses it
   in threads that are not part of the team.
+
+## Project integrations
+
+In Settings → Projects, choose a project and open Integrations. Sign in with
+Supabase in your browser, authorize access, then choose a Supabase project and a
+branch. Add another connection when the project uses several Supabase projects.
+Refresh reloads the available projects and branches. Choosing another Supabase
+project clears the previous branch selection.
+
+Sign in with GitHub separately and choose a repository from the account's list.
+GitHub uses the environment's T3 Code app sign-in, or GitHub CLI when the app sign-in
+is not configured. A device sign-in shows the code to enter in the browser.
+GitHub and Supabase branch selections are independent.
+
+Credentials and refresh tokens stay in the environment's secret store.
+Connections belong to the selected project on its environment. Agents receive
+project references and selected branches with their turns and can consult
+`project_integrations` for current configuration or live Supabase branches.
+Unlink a connection from the same settings section to remove it from the project.

@@ -1,3 +1,6 @@
+import * as ProjectIntegrationAuth from "./project/ProjectIntegrationAuth.ts";
+import * as ProjectIntegrationStore from "./project/ProjectIntegrationStore.ts";
+import * as ProjectIntegrations from "./project/ProjectIntegrations.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -780,6 +783,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
+    ProjectIntegrationAuth.layerCallback,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
@@ -793,6 +797,9 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(GarrsService.GarrsService.pipe(Effect.flatMap((garrs) => garrs.start()))),
 ).pipe(
   // One instance shared by Settings and clients (WebSocket) and team members (/mcp).
+  Layer.provide(ProjectIntegrations.layer.pipe(Layer.provide(SecretResolver.layer))),
+  Layer.provideMerge(ProjectIntegrationAuth.layer.pipe(Layer.provide(SecretResolver.layer))),
+  Layer.provideMerge(ProjectIntegrationStore.layer),
   Layer.provide(GarrsService.layer.pipe(Layer.provide(GarrsStore.layer))),
   Layer.provideMerge(GarrsStore.layer),
   Layer.provide(

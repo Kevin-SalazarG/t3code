@@ -1,3 +1,5 @@
+import * as ProjectIntegrationsHandlers from "./toolkits/projectIntegrations/handlers.ts";
+import { ProjectIntegrationsToolkit } from "./toolkits/projectIntegrations/tools.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1067,6 +1069,7 @@ const provideRegistrationServices = <Services>() =>
   );
 const GARRS_READ_ONLY_MCP_TOOLS = new Set([
   "garrs",
+  "project_integrations",
   "orchestrator_capabilities",
   "list_scheduled_tasks",
   "task_status",
@@ -1222,6 +1225,10 @@ export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentHandlers.layer,
 );
 
+const layerProjectIntegrationsToolkit = toolkitRegistration(
+  ProjectIntegrationsToolkit,
+  ProjectIntegrationsHandlers.layer,
+);
 const layerGarrsToolkit = toolkitRegistration(GarrsToolkit, GarrsHandlers.layer);
 
 export const layerPullRequestsToolkit = toolkitRegistration(
@@ -1287,6 +1294,7 @@ export const layerTools = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerGarrsToolkit,
+  layerProjectIntegrationsToolkit,
 );
 
 export const layer = layerMcpTransport(layerTools);

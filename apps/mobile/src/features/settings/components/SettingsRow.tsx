@@ -13,6 +13,7 @@ import { openSettings } from "../settings-navigation";
 export function SettingsRow(props: {
   readonly disabled?: boolean;
   readonly icon: ComponentProps<typeof ListRow>["icon"];
+  readonly leading?: ComponentProps<typeof ListRow>["leading"];
   readonly label: string;
   readonly value?: string;
   readonly valuePosition?: "below" | "trailing";
@@ -29,6 +30,7 @@ export function SettingsRow(props: {
     (props.valuePosition === undefined && Platform.OS === "android");
   const content = {
     icon: props.icon,
+    leading: props.leading,
     label: props.label,
     description: valueBelow ? props.value : undefined,
     detail: valueBelow ? undefined : props.value,

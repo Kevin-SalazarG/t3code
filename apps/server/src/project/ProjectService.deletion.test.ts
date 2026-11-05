@@ -516,6 +516,12 @@ it.effect(
           projectSettingsOverrides: {
             [projectId]: { providerInstances: { [instanceId]: { enabled: true } } },
           },
+          projectIntegrations: {
+            [projectId]: {
+              supabase: {},
+              github: { repository: "acme/app", account: "developer", accessToken: "test-token" },
+            },
+          },
         });
 
         yield* service.delete({
@@ -525,6 +531,7 @@ it.effect(
 
         const settingsAfterDelete = yield* serverSettings.getSettings;
         assert.isUndefined(settingsAfterDelete.projectSettingsOverrides[projectId]);
+        assert.isUndefined(settingsAfterDelete.projectIntegrations[projectId]);
       }).pipe(Effect.provide(layerServices));
     }).pipe(Effect.provide(layerDatabase)),
 );
