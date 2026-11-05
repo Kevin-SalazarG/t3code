@@ -115,6 +115,7 @@ import {
   type T3AcpInstructionState,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import type { AcpOsSandbox } from "./osSandbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
@@ -156,6 +157,8 @@ export interface AcpAdapterV2RuntimeInput {
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly httpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly processEnvironment?: NodeJS.ProcessEnv;
+  /** Flavors must forward this to AcpSessionRuntime; Garrs turns refuse unconfined processes. */
+  readonly osSandbox?: AcpOsSandbox;
   readonly resumeSessionId?: string;
   readonly interruptPromptOnCancel?: boolean;
   readonly clientCapabilities: EffectAcpSchema.InitializeRequest["clientCapabilities"];
@@ -799,6 +802,41 @@ function negotiatedCapabilities(
     },
   };
 }
+
+/** Garrs members run confined: read-only roles cannot write their project, writers only their checkout. */
+function acpGarrsOsSandbox(
+  policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+  t3Home: string,
+): AcpOsSandbox | undefined {
+  if (policy.garrs !== true || policy.cwd === null) return undefined;
+  const type = unknownRecord(policy.sandboxPolicy)?.type;
+  if (type !== "readOnly" && type !== "workspaceWrite") return undefined;
+  const write = type === "workspaceWrite";
+  const unique = (paths: ReadonlyArray<string>) => [...new Set(paths)].toSorted();
+  return {
+    writableRoots: write ? [policy.cwd] : [],
+    protectedRoots: unique([
+      ...(write ? [] : [policy.cwd]),
+      ...(policy.garrsReadRoots ?? []),
+      ...(policy.garrsWriteDenyRoots ?? []),
+      ...(policy.garrsProtectedRoots ?? []),
+    ]),
+    stateRoots: [t3Home],
+  };
+}
+
+/** T3-authored text only, so failure reporting may show it verbatim. */
+export class AcpGarrsIsolationError extends Schema.TaggedError<AcpGarrsIsolationError>()(
+  "AcpGarrsIsolationError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
+const sameOsSandbox = (left: AcpOsSandbox | undefined, right: AcpOsSandbox | undefined) =>
+  left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
 
 interface AcpMcpContext {
   readonly servers: ReadonlyArray<EffectAcpSchema.McpServer>;
@@ -2293,6 +2331,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 );
             }),
           ).pipe(Effect.asVoid);
+        const garrsOsSandbox = acpGarrsOsSandbox(input.runtimePolicy, host.paths.baseDir);
         const makeRuntimeInput = (
           runtimeGeneration: number,
           mcpContext: AcpMcpContext,
@@ -2309,6 +2348,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ...(mcpContext.processEnvironment === undefined
               ? {}
               : { processEnvironment: mcpContext.processEnvironment }),
+            ...(garrsOsSandbox === undefined ? {} : { osSandbox: garrsOsSandbox }),
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
             interruptPromptOnCancel: flavor.interruptPromptOnCancel ?? false,
             clientCapabilities: {
@@ -7704,6 +7744,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: mcpSession !== undefined,
             hasDeviceTools: mcpSession?.capabilities?.has("device") === true,
+            ...(turnInput.runtimePolicy.instructions === undefined
+              ? {}
+              : { threadInstructions: turnInput.runtimePolicy.instructions }),
           } satisfies T3AcpInstructionState;
           const previousInstructionState = (yield* Ref.get(promptInstructionStates)).get(sessionId);
           const compactionMarker = (yield* Ref.get(compactionMarkers)).get(sessionId);
@@ -7867,6 +7910,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
               turnInput.threadId,
             );
+            if (turnInput.runtimePolicy.garrs === true) {
+              const expected = acpGarrsOsSandbox(turnInput.runtimePolicy, host.paths.baseDir);
+              if (!sameOsSandbox(runtime.osSandbox, expected)) {
+                return yield* new AcpGarrsIsolationError({
+                  reason:
+                    "Garrs requires this agent to run inside its operating-system sandbox; the turn was not started.",
+                });
+              }
+              if ((yield* mcpSessions.read(turnInput.threadId)) === undefined) {
+                return yield* new AcpGarrsIsolationError({
+                  reason: "Garrs requires the T3 MCP server; the turn was not started.",
+                });
+              }
+            }
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {

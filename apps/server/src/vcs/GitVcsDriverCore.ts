@@ -4248,7 +4248,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
       input.cwd,
-      ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
+      [
+        "-c",
+        `checkout.workers=${checkoutWorkers}`,
+        ...(options?.disableHooks === true
+          ? ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+          : []),
+        ...args,
+      ],
       {
         fallbackErrorDetail: "git worktree add failed",
         // Large checkouts and post-checkout hooks can legitimately run for many

@@ -4,6 +4,11 @@ import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
+  hasGarrsMcpTool,
+  isUnsafeGarrsMcpServer,
+  unsafeConfiguredMcpServers,
+} from "./GarrsMcpSafety.ts";
+import {
   mcpToolPresentation,
   type McpToolPresentation,
 } from "../../provider/CodexToolPresentation.ts";
@@ -106,7 +111,10 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
+import {
+  buildCodexAdditionalContext,
+  CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+} from "../../provider/CodexDeveloperInstructions.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -714,6 +722,33 @@ const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
 );
 
+/** Split server-owned thread instructions into entries under Codex's per-value cap. */
+function codexThreadInstructionsContext(
+  instructions: string | undefined,
+): Record<string, CodexSchema.V2TurnStartParams__AdditionalContextEntry> | undefined {
+  if (instructions === undefined || instructions.trim().length === 0) return undefined;
+  const chunks: Array<string> = [];
+  let current = "";
+  let bytes = 0;
+  for (const character of instructions) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES) {
+      chunks.push(current);
+      current = "";
+      bytes = 0;
+    }
+    current += character;
+    bytes += size;
+  }
+  if (current.length > 0) chunks.push(current);
+  return Object.fromEntries(
+    chunks.map((value, index) => [
+      `t3_code_thread_${String(index + 1).padStart(2, "0")}`,
+      { kind: "application" as const, value },
+    ]),
+  );
+}
+
 function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   readonly approvalPolicy: CodexSchema.V2TurnStartParams__AskForApproval;
   readonly approvalsReviewer: CodexSchema.V2TurnStartParams__ApprovalsReviewer;
@@ -803,10 +838,11 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
             },
           )
         : undefined;
+    const threadContext = codexThreadInstructionsContext(input.runtimePolicy.instructions);
     const additionalContext =
-      t3Context === undefined && Object.keys(appContext).length === 0
+      t3Context === undefined && threadContext === undefined && Object.keys(appContext).length === 0
         ? undefined
-        : { ...t3Context, ...appContext };
+        : { ...t3Context, ...threadContext, ...appContext };
     return yield* decodeCodexTurnStartParamsWithCollaborationMode({
       threadId: input.nativeThreadId,
       input: input.codexInput,
@@ -1379,23 +1415,26 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
-function codexThreadRuntimeParams(input: {
+export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly garrsMcpServers?: ReadonlyArray<string>;
 }): {
   readonly cwd?: string;
   readonly model?: string;
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const garrs = input.runtimePolicy?.garrs === true;
   const t3Server =
     mcpSession === undefined
       ? undefined
       : {
           url: mcpSession.endpoint,
           tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
+          ...(garrs ? { enabled: true, tools: { garrs: { approval_mode: "approve" } } } : {}),
           http_headers: { Authorization: mcpSession.authorizationHeader },
         };
   return {
@@ -1407,19 +1446,35 @@ function codexThreadRuntimeParams(input: {
       ...(input.threadId === null
         ? {}
         : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
-      ...(t3Server === undefined
-        ? {}
-        : {
-            // Override only T3's servers so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
-            // Code Mode runs a blocking wait as a nested call, and the model keeps working
-            // around it. A second, direct-only registration makes it a plain tool call.
-            [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
-              ...t3Server,
-              enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
-              omit_tools_from: ["code_mode", "deferred"],
+      ...(garrs
+        ? {
+            "features.apps": false,
+            "features.plugins": false,
+            "features.hooks": false,
+            "features.multi_agent": false,
+            "features.browser_use": false,
+            "features.browser_use_external": false,
+            "features.computer_use": false,
+            mcp_servers: {
+              ...Object.fromEntries(
+                (input.garrsMcpServers ?? []).map((name) => [name, { enabled: false }]),
+              ),
+              ...(t3Server === undefined ? {} : { "t3-code": t3Server }),
             },
-          }),
+          }
+        : t3Server === undefined
+          ? {}
+          : {
+              // Override only T3's servers so launch-argument MCP servers survive.
+              "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
+              // Code Mode runs a blocking wait as a nested call, and the model keeps working
+              // around it. A second, direct-only registration makes it a plain tool call.
+              [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
+                ...t3Server,
+                enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
+                omit_tools_from: ["code_mode", "deferred"],
+              },
+            }),
     },
   };
 }
@@ -6761,6 +6816,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        class CodexGarrsMcpSafetyError extends Schema.TaggedError<CodexGarrsMcpSafetyError>()(
+          "CodexGarrsMcpSafetyError",
+          { reason: Schema.String },
+        ) {
+          override get message(): string {
+            return this.reason;
+          }
+        }
+        const verifyGarrsMcpConfig = Effect.fn("CodexAdapterV2.verifyGarrsMcpConfig")(function* (
+          policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+        ) {
+          if (policy?.garrs !== true) return [];
+          const response = yield* client.request("config/read", {
+            cwd: policy.cwd,
+            includeLayers: false,
+          });
+          const unsafe = unsafeConfiguredMcpServers(response.config);
+          if (unsafe === null) {
+            return yield* new CodexGarrsMcpSafetyError({
+              reason: "Garrs cannot isolate unverifiable MCP configuration for this thread.",
+            });
+          }
+          return unsafe;
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -6768,6 +6848,41 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            if (turnInput.runtimePolicy.garrs === true) {
+              if (mcpSession === undefined)
+                return yield* new CodexGarrsMcpSafetyError({
+                  reason: "Garrs requires the T3 MCP server.",
+                });
+              const seen = new Set<string>();
+              let cursor: string | undefined;
+              let foundT3 = false;
+              for (let page = 0; page < 32; page++) {
+                const response = yield* client.request("mcpServerStatus/list", {
+                  threadId,
+                  detail: "toolsAndAuthOnly",
+                  ...(cursor === undefined ? {} : { cursor }),
+                });
+                if (response.data.some(isUnsafeGarrsMcpServer)) {
+                  return yield* new CodexGarrsMcpSafetyError({
+                    reason:
+                      "Garrs cannot start while an external MCP server is available to the thread.",
+                  });
+                }
+                foundT3 ||= response.data.some(hasGarrsMcpTool);
+                const next = response.nextCursor ?? undefined;
+                if (next === undefined) break;
+                if (seen.has(next) || page === 31)
+                  return yield* new CodexGarrsMcpSafetyError({
+                    reason: "Garrs could not verify the complete MCP server list.",
+                  });
+                seen.add(next);
+                cursor = next;
+              }
+              if (!foundT3)
+                return yield* new CodexGarrsMcpSafetyError({
+                  reason: "Garrs could not verify its advertised T3 MCP tool.",
+                });
+            }
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
@@ -7079,16 +7194,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId)),
-              Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
+              Effect.andThen(verifyGarrsMcpConfig(threadInput.runtimePolicy)),
+              Effect.flatMap((garrsMcpServers) =>
+                mcpSessions.read(threadInput.threadId).pipe(
+                  Effect.flatMap((mcpSession) =>
+                    client.request(
+                      "thread/start",
+                      codexThreadRuntimeParams({
+                        threadId: threadInput.threadId,
+                        mcpSession,
+                        garrsMcpServers,
+                        modelSelection: threadInput.modelSelection,
+                        runtimePolicy: threadInput.runtimePolicy,
+                      }),
+                    ),
+                  ),
                 ),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
@@ -7113,11 +7233,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           resumeThread: Effect.fn("CodexAdapterV2.resumeThread")(
             function* (threadInput) {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
+              yield* ensureInitialized;
+              const garrsMcpServers = yield* verifyGarrsMcpConfig(threadInput.runtimePolicy);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
               const resume = resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
                   threadId: appThreadId,
+                  garrsMcpServers,
                   mcpSession: yield* readMcpSession(appThreadId),
                   ...(threadInput.modelSelection === undefined
                     ? {}

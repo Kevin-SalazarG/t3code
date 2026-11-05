@@ -247,7 +247,17 @@ export function makeAntigravityAcpAdapterFlavor(
         mapError: (cause) => cause,
       });
     }),
-    sessionModeForPolicy: (policy) => antigravityPermissionMode(policy.runtimeMode),
+    // A read-only Garrs member asks first so T3 can refuse writes instead of the sandbox failing them.
+    sessionModeForPolicy: (policy) =>
+      antigravityPermissionMode(
+        policy.garrs === true &&
+          typeof policy.sandboxPolicy === "object" &&
+          policy.sandboxPolicy !== null &&
+          "type" in policy.sandboxPolicy &&
+          policy.sandboxPolicy.type === "readOnly"
+          ? "approval-required"
+          : policy.runtimeMode,
+      ),
     runtimeModeForSessionMode: antigravityRuntimeModeForSessionMode,
     clientFileSystem: {
       readTextFile: (request, cwd) =>

@@ -70,6 +70,14 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
   attachment_unreadable: "an attachment could not be read",
 };
 
+const SAFE_GARRS_MCP_FAILURES = new Set([
+  "Garrs cannot start with external or unverifiable MCP configuration. Disable external MCP servers for this session.",
+  "Garrs cannot start while an external MCP server is available to the thread.",
+  "Garrs requires the T3 MCP server.",
+  "Garrs could not verify the complete MCP server list.",
+  "Garrs could not verify its T3 MCP server.",
+]);
+
 /**
  * Walks a cause chain for curated text without reading arbitrary provider
  * defect text. `known` is the message of a domain error T3 raised itself;
@@ -106,6 +114,7 @@ function curatedCauseMessages(cause: unknown): {
             category: categoryMessage(),
           };
         case "AcpModelSelectionError":
+        case "AcpGarrsIsolationError":
         case "ClaudeBackgroundWorkBlocksQueryReplacementError":
         case "ClaudeAppendSystemPromptFileError":
         case "ClaudeAppendSystemPromptMissingValueError":
@@ -137,6 +146,13 @@ function curatedCauseMessages(cause: unknown): {
             known: `${stage}. Check the server logs for the provider's output, then retry the turn.`,
             category: categoryMessage(),
           };
+        }
+        case "CodexGarrsMcpSafetyError": {
+          const safeReason = (cause as Record<string, unknown>).reason;
+          if (typeof safeReason === "string" && SAFE_GARRS_MCP_FAILURES.has(safeReason)) {
+            return { known: safeReason, category: categoryMessage() };
+          }
+          break;
         }
         case "ContextHandoffDeliveryUncertainError":
           return {

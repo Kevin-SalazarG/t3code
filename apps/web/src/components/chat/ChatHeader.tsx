@@ -42,6 +42,7 @@ import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
+import { GarrsHeaderButton } from "../garrs/GarrsHeaderButton";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -431,6 +432,13 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread && activeProject && !activeProject.isScratch ? (
+        <GarrsHeaderButton
+          environmentId={activeThreadEnvironmentId}
+          projectId={activeProject.id}
+          threadId={activeThreadId}
+        />
+      ) : null}
     </div>
   );
 });

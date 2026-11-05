@@ -1,6 +1,96 @@
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { RuntimeTurnState, TurnTokenUsage } from "@t3tools/contracts";
 
+type ReportedCost = NonNullable<TurnTokenUsage["reportedCost"]>;
+export interface ClaudeQueryCostState {
+  totalUsd: number | null;
+  active: ClaudeTurnCostState | null;
+}
+export interface ClaudeTurnCostState {
+  readonly query: ClaudeQueryCostState;
+  readonly baseline: number | null;
+  latest: number | null;
+  valid: boolean;
+  done: boolean;
+  report: ReportedCost | undefined;
+  readonly seen: Set<string>;
+}
+
+// SDK cost totals restart at zero for each query(), including a resumed native session.
+export const makeClaudeQueryCostState = (): ClaudeQueryCostState => ({ totalUsd: 0, active: null });
+
+export function beginClaudeTurnCost(
+  query: ClaudeQueryCostState,
+  resetsQuery = false,
+): ClaudeTurnCostState {
+  const overlap = query.active !== null && !query.active.done;
+  if (query.active !== null && overlap) query.active.valid = false;
+  if (resetsQuery) query.totalUsd = null;
+  const turn: ClaudeTurnCostState = {
+    query,
+    baseline: query.totalUsd,
+    latest: null,
+    valid: !overlap,
+    done: false,
+    report: undefined,
+    seen: new Set(),
+  };
+  query.active = turn;
+  return turn;
+}
+
+export function observeClaudeTurnCost(
+  turn: ClaudeTurnCostState,
+  result: {
+    readonly uuid: string;
+    readonly subtype: string;
+    readonly total_cost_usd?: unknown;
+    readonly local_command?: string;
+  },
+): void {
+  if (turn.done || turn.seen.has(result.uuid)) return;
+  turn.seen.add(result.uuid);
+  if (result.local_command === "clear") turn.valid = false;
+  const total = result.total_cost_usd;
+  if (
+    typeof total !== "number" ||
+    !Number.isFinite(total) ||
+    total < 0 ||
+    (total === 0 && result.subtype !== "success")
+  ) {
+    turn.valid = false;
+    turn.query.totalUsd = null;
+    return;
+  }
+  if (turn.query.totalUsd !== null && total < turn.query.totalUsd) turn.valid = false;
+  turn.latest = total;
+  turn.query.totalUsd = total;
+}
+
+export function completeClaudeTurnCost(
+  turn: ClaudeTurnCostState,
+  completed: boolean,
+  hasFinalResult: boolean,
+  hasSubagents: boolean,
+): ReportedCost | undefined {
+  if (turn.done) return turn.report;
+  turn.done = true;
+  if (turn.query.active === turn) turn.query.active = null;
+  else turn.valid = false;
+  if (!hasFinalResult) turn.query.totalUsd = null;
+  if (turn.valid && !hasSubagents && turn.baseline !== null && turn.latest !== null) {
+    const amountUsd = turn.latest - turn.baseline;
+    if (amountUsd > 0)
+      turn.report = {
+        amountUsd,
+        source: "provider_api_report",
+        scope: "query_delta",
+        status: completed && hasFinalResult ? "complete" : "partial",
+      };
+  }
+  return turn.report;
+}
+
 function finiteNonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.round(value)
@@ -125,6 +215,7 @@ export function addClaudeLedgerUsage(
 }
 
 export interface ClaudeTurnObservations {
+  readonly reportedCost?: TurnTokenUsage["reportedCost"];
   // Models on the turn's root assistant messages.
   readonly rootModels?: ReadonlySet<string>;
   // Ledger growth across every result this turn consumed, including steered segments.
@@ -144,13 +235,19 @@ export function normalizeClaudeTurnTokenUsage(
   earlierSegmentUsage: ReadonlyArray<unknown> = [],
   observed: ClaudeTurnObservations = {},
 ): TurnTokenUsage {
+  const models = [
+    ...new Set(
+      [...(observed.rootModels ?? [])]
+        .map((model) => model.trim())
+        .filter((model) => model.length > 0 && model !== "<synthetic>"),
+    ),
+  ];
   const observedFields = {
-    ...(observed.rootModels !== undefined && observed.rootModels.size > 0
-      ? { models: [...observed.rootModels] }
-      : {}),
+    ...(models.length === 0 ? {} : { models }),
     ...(typeof result?.local_command === "string" && result.local_command.length > 0
       ? { localCommand: true }
       : {}),
+    ...(observed.reportedCost === undefined ? {} : { reportedCost: observed.reportedCost }),
   };
   const finalUsage = result?.usage as Record<string, unknown> | undefined;
   const usage = withEarlierSegmentUsage(finalUsage ?? {}, earlierSegmentUsage);
@@ -181,8 +278,12 @@ export function normalizeClaudeTurnTokenUsage(
       (rawOutputTokens ?? 0) >
     0;
 
-  if (!hasKnownUsage || (result?.subtype !== "success" && !hasPositiveUsage)) {
+  if (
+    !hasKnownUsage ||
+    (!hasPositiveUsage && (result?.subtype !== "success" || terminalStatus !== "completed"))
+  ) {
     return {
+      ...observedFields,
       usageStatus: "unavailable",
       usageScope: "main_agent",
       hasSubagents,

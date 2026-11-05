@@ -195,6 +195,8 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
+import * as GarrsService from "./garrs/GarrsService.ts";
+import * as GarrsStore from "./garrs/GarrsStore.ts";
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -784,7 +786,12 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  // Garrs team work: outbox effects, run endings and recovery after a restart.
+  Layer.effectDiscard(GarrsService.GarrsService.pipe(Effect.flatMap((garrs) => garrs.start()))),
 ).pipe(
+  // One instance shared by Settings and clients (WebSocket) and team members (/mcp).
+  Layer.provide(GarrsService.layer.pipe(Layer.provide(GarrsStore.layer))),
+  Layer.provideMerge(GarrsStore.layer),
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),

@@ -53,6 +53,13 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
+export const ProviderReportedCost = Schema.Struct({
+  amountUsd: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+  source: Schema.Literal("provider_api_report"),
+  scope: Schema.Literal("query_delta"),
+  status: Schema.Literals(["complete", "partial"]),
+});
+
 // Input includes cache reads/writes; output includes the optional reasoningTokens subset.
 const TurnTokenUsageCommonFields = {
   usageScope: Schema.Literal("main_agent"),
@@ -68,6 +75,7 @@ const TurnTokenUsageCommonFields = {
   otherUsage: Schema.optional(
     Schema.Struct({ inputTokens: NonNegativeInt, outputTokens: NonNegativeInt }),
   ),
+  reportedCost: Schema.optional(ProviderReportedCost),
 };
 export const TurnTokenUsage = Schema.Union([
   Schema.Struct({

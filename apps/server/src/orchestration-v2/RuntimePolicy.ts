@@ -10,10 +10,17 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as GarrsStore from "../garrs/GarrsStore.ts";
+import * as GarrsSubject from "../garrs/GarrsSubject.ts";
+import * as GarrsCheckout from "../garrs/GarrsCheckout.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { garrsDriverRejection } from "../garrs/GarrsDomain.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
@@ -24,11 +31,15 @@ export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyR
   {
     projectId: ProjectId,
     providerInstanceId: ProviderInstanceId,
+    reason: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
+    return (
+      this.reason ??
+      `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`
+    );
   }
 }
 
@@ -151,14 +162,17 @@ export const layerFromProjectStore: Layer.Layer<
     // The same ceiling the orchestrator enforces, fixed for the server's life.
     const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
     const maxRuntimeMode = managedPolicy?.limits?.maxRuntimeMode;
+    // Optional so hosts without Garrs (tests, tools) keep the plain policy.
+    const garrs = yield* Effect.serviceOption(GarrsStore.GarrsStore);
+    const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+    const paths = yield* Effect.serviceOption(Path.Path);
+    const vcs = yield* Effect.serviceOption(VcsProcess.VcsProcess);
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-        const supportedRuntimeModes =
-          instance === undefined
-            ? undefined
-            : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
+        const snapshot = instance === undefined ? undefined : yield* instance.snapshot.getSnapshot;
+        const supportedRuntimeModes = snapshot?.supportedRuntimeModes;
         const cwd =
           input.thread.worktreePath ??
           (yield* projects.get(input.thread.projectId).pipe(
@@ -184,11 +198,231 @@ export const layerFromProjectStore: Layer.Layer<
               }),
             ),
           ));
+        const member = Option.isNone(garrs)
+          ? null
+          : yield* garrs.value.getThread(input.thread.id).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
+            );
+        let garrsReadRoots: ReadonlyArray<string> = [];
+        let garrsWriteDenyRoots: ReadonlyArray<string> = [];
+        let garrsProtectedRoots: ReadonlyArray<string> = [];
+        if (member !== null) {
+          const reason =
+            snapshot === undefined
+              ? "The selected provider instance is unavailable."
+              : garrsDriverRejection(snapshot.driver);
+          if (reason !== null) {
+            return yield* new RuntimePolicyResolveError({
+              projectId: input.thread.projectId,
+              providerInstanceId: input.modelSelection.instanceId,
+              reason: `${input.modelSelection.instanceId} ${reason}`,
+            });
+          }
+          if (
+            member.agentId === "copito" &&
+            member.attemptId !== null &&
+            member.readOnly &&
+            Option.isSome(garrs)
+          ) {
+            const attempt = yield* garrs.value
+              .findAttemptById(member.attemptId)
+              .pipe(Effect.orElseSucceed(() => null));
+            const aggregate =
+              attempt === null
+                ? null
+                : yield* garrs.value
+                    .loadAggregate(attempt.workItemId)
+                    .pipe(Effect.orElseSucceed(() => null));
+            if (aggregate === null)
+              return yield* new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                reason: "Cannot verify the review's work item and project roots.",
+              });
+            const contexts = aggregate.workItem.projectContexts ?? [];
+            if (contexts.length > 0) {
+              if (Option.isNone(fileSystem) || Option.isNone(paths) || Option.isNone(vcs))
+                return yield* new RuntimePolicyResolveError({
+                  projectId: input.thread.projectId,
+                  providerInstanceId: input.modelSelection.instanceId,
+                  reason: "Cannot verify read-only access to all review projects.",
+                });
+              const roots = [
+                {
+                  projectId: aggregate.workItem.projectId,
+                  root: aggregate.workItem.projectRoot,
+                  identity: aggregate.workItem.repositoryIdentity,
+                  workspace: aggregate.workItem.workspace,
+                },
+                ...contexts.map((context) => ({
+                  projectId: context.projectId,
+                  root: context.projectRoot,
+                  identity: context.repositoryIdentity,
+                  workspace: context.workspace,
+                })),
+              ];
+              const validated: string[] = [];
+              for (const entry of roots) {
+                const project = yield* projects
+                  .get(entry.projectId)
+                  .pipe(Effect.orElseSucceed(() => Option.none()));
+                if (
+                  Option.isNone(project) ||
+                  entry.root === undefined ||
+                  entry.identity === undefined
+                )
+                  return yield* new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    reason: `Cannot verify review project ${entry.projectId}.`,
+                  });
+                const canonical = yield* fileSystem.value
+                  .realPath(project.value.workspaceRoot)
+                  .pipe(Effect.option);
+                const identity = yield* GarrsSubject.repositoryIdentity(
+                  project.value.workspaceRoot,
+                ).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+                  Effect.provideService(Path.Path, paths.value),
+                  Effect.provideService(VcsProcess.VcsProcess, vcs.value),
+                );
+                if (
+                  Option.isNone(canonical) ||
+                  canonical.value !== entry.root ||
+                  Option.isNone(identity) ||
+                  identity.value !== entry.identity
+                )
+                  return yield* new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    reason: `Review project ${entry.projectId} is unavailable or its repository changed.`,
+                  });
+                if (aggregate.workItem.access === "write") {
+                  if (entry.workspace?.checkoutPath == null)
+                    return yield* new RuntimePolicyResolveError({
+                      projectId: input.thread.projectId,
+                      providerInstanceId: input.modelSelection.instanceId,
+                      reason: `Cannot verify review project ${entry.projectId}.`,
+                    });
+                  const checked = yield* GarrsCheckout.bind(
+                    project.value.workspaceRoot,
+                    entry.workspace.checkoutPath,
+                    entry.workspace,
+                  ).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+                    Effect.provideService(Path.Path, paths.value),
+                    Effect.provideService(VcsProcess.VcsProcess, vcs.value),
+                  );
+                  const checkout = yield* fileSystem.value
+                    .realPath(entry.workspace.checkoutPath)
+                    .pipe(Effect.option);
+                  if (checked === null || Option.isNone(checkout))
+                    return yield* new RuntimePolicyResolveError({
+                      projectId: input.thread.projectId,
+                      providerInstanceId: input.modelSelection.instanceId,
+                      reason: `Review project ${entry.projectId} is unavailable or its repository changed.`,
+                    });
+                  validated.push(checkout.value);
+                } else validated.push(canonical.value);
+              }
+              garrsReadRoots = validated;
+            }
+          }
+          if (!member.readOnly) {
+            if (
+              input.thread.worktreePath === null ||
+              Option.isNone(fileSystem) ||
+              Option.isNone(paths) ||
+              Option.isNone(vcs)
+            ) {
+              return yield* new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                reason: "Garrs writers require a verified isolated checkout.",
+              });
+            }
+            const project = yield* projects
+              .get(input.thread.projectId)
+              .pipe(Effect.orElseSucceed(() => Option.none()));
+            if (Option.isNone(project))
+              return yield* new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                reason: "The writer's project is unavailable.",
+              });
+            const original = yield* fileSystem.value
+              .realPath(project.value.workspaceRoot)
+              .pipe(Effect.option);
+            const checkout = yield* fileSystem.value
+              .realPath(input.thread.worktreePath)
+              .pipe(Effect.option);
+            const isolated = yield* GarrsSubject.isIsolatedCheckout(
+              project.value.workspaceRoot,
+              input.thread.worktreePath,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+              Effect.provideService(Path.Path, paths.value),
+              Effect.provideService(VcsProcess.VcsProcess, vcs.value),
+            );
+            if (
+              Option.isNone(original) ||
+              Option.isNone(checkout) ||
+              original.value === checkout.value ||
+              !isolated
+            ) {
+              return yield* new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                reason: "Garrs writers require a verified isolated checkout.",
+              });
+            }
+            const common = yield* GarrsSubject.repositoryIdentity(checkout.value).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+              Effect.provideService(Path.Path, paths.value),
+              Effect.provideService(VcsProcess.VcsProcess, vcs.value),
+            );
+            if (Option.isNone(common))
+              return yield* new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                reason: "Cannot verify the writer's Git metadata paths.",
+              });
+            garrsWriteDenyRoots = [paths.value.join(checkout.value, ".git"), common.value];
+            const relative = paths.value.relative(original.value, checkout.value);
+            if (relative.startsWith("..") || paths.value.isAbsolute(relative))
+              garrsProtectedRoots = [original.value];
+          }
+        }
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          // Garrs members get their role brief, and read-only roles the adapter's sandbox.
+          ...(member === null ? {} : { instructions: member.instructions }),
+          ...(member === null ? {} : { garrs: true }),
+          ...(garrsReadRoots.length === 0 ? {} : { garrsReadRoots }),
+          ...(garrsWriteDenyRoots.length === 0 ? {} : { garrsWriteDenyRoots }),
+          ...(garrsProtectedRoots.length === 0 ? {} : { garrsProtectedRoots }),
+          ...(member?.readOnly === true ? { sandboxPolicy: { type: "readOnly" } } : {}),
+          ...(member?.readOnly === false
+            ? {
+                sandboxPolicy: {
+                  type: "workspaceWrite",
+                  writableRoots: [],
+                  excludeSlashTmp: true,
+                  excludeTmpdirEnvVar: true,
+                  networkAccess: false,
+                },
+              }
+            : {}),
         });
       }),
     });

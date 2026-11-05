@@ -360,6 +360,29 @@ import {
   ServerSettingsPatch,
 } from "./settings.ts";
 import {
+  GarrsConfigSnapshot,
+  GarrsControlInput,
+  GarrsControlResult,
+  GarrsError,
+  GarrsExportConfigInput,
+  GarrsImportConfigInput,
+  GarrsImportConfigResult,
+  GarrsMemoryListResult,
+  GarrsMemoryMutation,
+  GarrsPortableConfig,
+  GarrsProjectBindingSnapshot,
+  GarrsProjectInput,
+  GarrsProjectState,
+  GarrsStartConversationInput,
+  GarrsStartConversationResult,
+  GarrsUpdateConfigInput,
+  GarrsUpdateProjectBindingInput,
+  GarrsUsageInput,
+  GarrsUsageResult,
+  GarrsWorkItemDetail,
+  GarrsWorkItemInput,
+} from "./garrs.ts";
+import {
   ScheduledTaskDeleteInput,
   ScheduledTaskDeleteResult,
   ScheduledTaskError,
@@ -548,6 +571,20 @@ export const WS_METHODS = {
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  garrsGetConfig: "garrs.getConfig",
+  garrsUpdateConfig: "garrs.updateConfig",
+  garrsGetProjectBinding: "garrs.getProjectBinding",
+  garrsUpdateProjectBinding: "garrs.updateProjectBinding",
+  garrsStartConversation: "garrs.startConversation",
+  garrsSubscribeProject: "garrs.subscribeProject",
+  garrsSubscribeWorkItem: "garrs.subscribeWorkItem",
+  garrsControl: "garrs.control",
+  garrsExportConfig: "garrs.exportConfig",
+  garrsImportConfig: "garrs.importConfig",
+  garrsGetUsage: "garrs.getUsage",
+  garrsListMemory: "garrs.listMemory",
+  garrsMutateMemory: "garrs.mutateMemory",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1968,6 +2005,75 @@ const WsScheduledTasksGetWebhookDeliveryRpc = Rpc.make(
   },
 );
 
+const GarrsRpcError = Schema.Union([GarrsError, EnvironmentAuthorizationError]);
+const WsGarrsGetConfigRpc = Rpc.make(WS_METHODS.garrsGetConfig, {
+  payload: Schema.Struct({}),
+  success: GarrsConfigSnapshot,
+  error: GarrsRpcError,
+});
+const WsGarrsUpdateConfigRpc = Rpc.make(WS_METHODS.garrsUpdateConfig, {
+  payload: GarrsUpdateConfigInput,
+  success: GarrsConfigSnapshot,
+  error: GarrsRpcError,
+});
+const WsGarrsGetProjectBindingRpc = Rpc.make(WS_METHODS.garrsGetProjectBinding, {
+  payload: GarrsProjectInput,
+  success: GarrsProjectBindingSnapshot,
+  error: GarrsRpcError,
+});
+const WsGarrsUpdateProjectBindingRpc = Rpc.make(WS_METHODS.garrsUpdateProjectBinding, {
+  payload: GarrsUpdateProjectBindingInput,
+  success: GarrsProjectBindingSnapshot,
+  error: GarrsRpcError,
+});
+const WsGarrsStartConversationRpc = Rpc.make(WS_METHODS.garrsStartConversation, {
+  payload: GarrsStartConversationInput,
+  success: GarrsStartConversationResult,
+  error: GarrsRpcError,
+});
+const WsGarrsSubscribeProjectRpc = Rpc.make(WS_METHODS.garrsSubscribeProject, {
+  payload: GarrsProjectInput,
+  success: GarrsProjectState,
+  error: GarrsRpcError,
+  stream: true,
+});
+const WsGarrsSubscribeWorkItemRpc = Rpc.make(WS_METHODS.garrsSubscribeWorkItem, {
+  payload: GarrsWorkItemInput,
+  success: GarrsWorkItemDetail,
+  error: GarrsRpcError,
+  stream: true,
+});
+const WsGarrsControlRpc = Rpc.make(WS_METHODS.garrsControl, {
+  payload: GarrsControlInput,
+  success: GarrsControlResult,
+  error: GarrsRpcError,
+});
+const WsGarrsExportConfigRpc = Rpc.make(WS_METHODS.garrsExportConfig, {
+  payload: GarrsExportConfigInput,
+  success: GarrsPortableConfig,
+  error: GarrsRpcError,
+});
+const WsGarrsImportConfigRpc = Rpc.make(WS_METHODS.garrsImportConfig, {
+  payload: GarrsImportConfigInput,
+  success: GarrsImportConfigResult,
+  error: GarrsRpcError,
+});
+const WsGarrsGetUsageRpc = Rpc.make(WS_METHODS.garrsGetUsage, {
+  payload: GarrsUsageInput,
+  success: GarrsUsageResult,
+  error: GarrsRpcError,
+});
+const WsGarrsListMemoryRpc = Rpc.make(WS_METHODS.garrsListMemory, {
+  payload: GarrsProjectInput,
+  success: GarrsMemoryListResult,
+  error: GarrsRpcError,
+});
+const WsGarrsMutateMemoryRpc = Rpc.make(WS_METHODS.garrsMutateMemory, {
+  payload: GarrsMemoryMutation,
+  success: GarrsMemoryListResult,
+  error: GarrsRpcError,
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2053,6 +2159,19 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
+  WsGarrsGetConfigRpc,
+  WsGarrsUpdateConfigRpc,
+  WsGarrsGetProjectBindingRpc,
+  WsGarrsUpdateProjectBindingRpc,
+  WsGarrsStartConversationRpc,
+  WsGarrsSubscribeProjectRpc,
+  WsGarrsSubscribeWorkItemRpc,
+  WsGarrsControlRpc,
+  WsGarrsExportConfigRpc,
+  WsGarrsImportConfigRpc,
+  WsGarrsGetUsageRpc,
+  WsGarrsListMemoryRpc,
+  WsGarrsMutateMemoryRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

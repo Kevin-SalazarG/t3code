@@ -348,6 +348,39 @@ it.effect.each(["origin", "github"] as const)(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("can suppress the post-checkout hook for a single worktree creation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const marker = path.join(cwd, ".git/hook-ran");
+      yield* writeTextFile(
+        cwd,
+        ".git/hooks/post-checkout",
+        '#!/bin/sh\ntouch "$(git rev-parse --git-common-dir)/hook-ran"\n',
+      );
+      yield* fs.chmod(path.join(cwd, ".git/hooks/post-checkout"), 0o755);
+      const dest = path.join(yield* makeTmpDir("git-worktrees-"), "suppressed");
+      yield* driver.createWorktree(
+        { cwd, path: dest, refName: initialBranch, newRefName: "feature/suppressed" },
+        { disableHooks: true },
+      );
+      assert.isFalse(yield* fs.exists(marker));
+      const normal = path.join(yield* makeTmpDir("git-worktrees-"), "normal");
+      yield* driver.createWorktree({
+        cwd,
+        path: normal,
+        refName: initialBranch,
+        newRefName: "feature/normal",
+      });
+      assert.isTrue(yield* fs.exists(marker));
+    }).pipe(Effect.provide(layerTest)),
+  ),
+);
+
 it.effect.each([
   { hookExitCode: 0, commonDirFailure: "none" },
   { hookExitCode: 1, commonDirFailure: "none" },
@@ -4841,6 +4874,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
 
     it.effect("keeps generated worktree folders short without changing long branch names", () =>
       Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
         const pathService = yield* Path.Path;
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
@@ -4867,7 +4901,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           assert.equal(yield* git(created.worktree.path, ["branch", "--show-current"]), branch);
           assert.include(
             yield* git(cwd, ["-c", "core.quotePath=false", "worktree", "list", "--porcelain"]),
-            `worktree ${created.worktree.path}`,
+            `worktree ${yield* fileSystem.realPath(created.worktree.path)}`,
           );
           folders.add(folder);
         }

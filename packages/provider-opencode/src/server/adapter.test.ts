@@ -9,6 +9,7 @@ import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import {
   CheckpointId,
+  EnvironmentId,
   NodeId,
   ProjectId,
   ProviderInstanceId,
@@ -157,6 +158,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     readonly options?: ReadonlyArray<ProviderOptionSelection>;
     readonly interactionMode?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["interactionMode"];
   } = {},
+  external = true,
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
   const threadId = ThreadId.make(`thread-opencode-${suffix}`);
@@ -175,7 +177,8 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     environment: {},
   }).pipe(
     Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
-      connectToOpenCodeServer: () => Effect.succeed({ url: "http://test.invalid", external: true }),
+      connectToOpenCodeServer: () =>
+        Effect.succeed({ url: "http://test.invalid", external, exitCode: null }),
       createOpenCodeSdkClient: () => client,
     } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
     Effect.provideService(ProviderHost.ProviderHost, {
@@ -255,6 +258,126 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect("keeps ordinary per-thread instructions working without Garrs MCP", () =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const prompts: Array<{ system?: string }> = [];
+      const harness = yield* makeOpenCodeRuntimeHarness("plain-instructions", "root", {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+          promptAsync: async (input: { system?: string }) => {
+            prompts.push(input);
+            return { data: true };
+          },
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+      });
+      yield* harness.startTurn(
+        "hello",
+        harness.providerThread,
+        runtimePolicy("full-access", { instructions: "ORDINARY-THREAD" }),
+      );
+      assert.include(prompts[0]?.system ?? "", "ORDINARY-THREAD");
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
+  it.effect(
+    "supplies role instructions and the requested model when resuming a T3 MCP session",
+    () =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const instanceId = ProviderInstanceId.make("opencode-garrs");
+        const threadId = ThreadId.make("thread-opencode-garrs");
+        yield* sessions.set({
+          environmentId: EnvironmentId.make("test"),
+          threadId,
+          providerSessionId: "session-opencode-garrs",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1/mcp",
+          authorizationHeader: "Bearer test",
+          browserToolsAvailable: false,
+        });
+        const prompts: Array<{ system?: string; model?: { providerID: string; modelID: string } }> =
+          [];
+        let connected = true;
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          "garrs",
+          "root",
+          {
+            event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+            mcp: {
+              add: async () => ({ data: { "t3-code": { status: "connected" } } }),
+              status: async () => ({
+                data: { "t3-code": { status: connected ? "connected" : "failed" } },
+              }),
+            },
+            session: {
+              create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+              get: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+              promptAsync: async (input: {
+                system?: string;
+                model?: { providerID: string; modelID: string };
+              }) => {
+                prompts.push(input);
+                return { data: true };
+              },
+              abort: async () => ({ data: true }),
+              children: async () => ({ data: [] }),
+            },
+          },
+          {},
+          {},
+          false,
+        );
+        const policy = runtimePolicy("full-access", {
+          cwd: "/workspace",
+          instructions: "ROLE-TEST",
+          garrs: true,
+        });
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: policy,
+        });
+        yield* harness.startTurn("hello", harness.providerThread, policy);
+        assert.include(prompts[0]?.system ?? "", "ROLE-TEST");
+        assert.deepEqual(prompts[0]?.model, { providerID: "anthropic", modelID: "claude-sonnet" });
+        connected = false;
+        assert.equal(
+          (yield* Effect.result(harness.startTurn("again", harness.providerThread, policy)))._tag,
+          "Failure",
+        );
+        connected = true;
+        const readOnly = runtimePolicy("full-access", {
+          cwd: "/workspace",
+          instructions: "ROLE-TEST",
+          garrs: true,
+          sandboxPolicy: { type: "readOnly" },
+        });
+        assert.equal(
+          (yield* Effect.result(harness.startTurn("again", harness.providerThread, readOnly)))._tag,
+          "Failure",
+        );
+        const write = runtimePolicy("full-access", {
+          cwd: "/workspace",
+          instructions: "ROLE-TEST",
+          garrs: true,
+          sandboxPolicy: { type: "workspaceWrite" },
+        });
+        assert.equal(
+          (yield* Effect.result(harness.startTurn("again", harness.providerThread, write)))._tag,
+          "Failure",
+        );
+        assert.equal(prompts.length, 1);
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
+  );
   it.effect.each([
     {
       message: "<none>",

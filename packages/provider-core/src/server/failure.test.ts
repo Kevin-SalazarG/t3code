@@ -139,6 +139,33 @@ it("names how the provider process exited and the stage it failed in, without it
   );
 });
 
+it("preserves only known Garrs MCP safety failures through provider wrappers", () => {
+  const reasons = [
+    "Garrs cannot start with external or unverifiable MCP configuration. Disable external MCP servers for this session.",
+    "Garrs cannot start while an external MCP server is available to the thread.",
+    "Garrs requires the T3 MCP server.",
+    "Garrs could not verify the complete MCP server list.",
+    "Garrs could not verify its T3 MCP server.",
+  ];
+  for (const reason of reasons) {
+    for (const wrapper of ["ProviderAdapterTurnStartError", "ProviderAdapterEnsureThreadError"]) {
+      const cause = Cause.fail({
+        _tag: wrapper,
+        cause: { _tag: "CodexGarrsMcpSafetyError", reason },
+      });
+      assert.equal(makeProviderFailure({ cause }).message, reason);
+    }
+  }
+  const unsafe = Cause.fail({
+    _tag: "ProviderAdapterTurnStartError",
+    cause: { _tag: "CodexGarrsMcpSafetyError", reason: "token secret /private/path" },
+  });
+  const message = makeProviderFailure({ cause: unsafe }).message;
+  assert.notInclude(message, "secret");
+  assert.notInclude(message, "/private/path");
+  assert.include(message, "provider could not start");
+});
+
 it("keeps unrecognized reasons and provider text out of category messages", () => {
   for (const cause of [
     "Private launch command",

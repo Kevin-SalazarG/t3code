@@ -30,6 +30,12 @@ import {
   normalizeClaudeTurnTokenUsage,
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
+  beginClaudeTurnCost,
+  completeClaudeTurnCost,
+  makeClaudeQueryCostState,
+  observeClaudeTurnCost,
+  type ClaudeQueryCostState,
+  type ClaudeTurnCostState,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -489,6 +495,7 @@ export interface ClaudeAgentSdkQueryPresetTools {
 export type ClaudeAgentSdkQueryTools = ClaudeAgentSdkQueryToolList | ClaudeAgentSdkQueryPresetTools;
 
 export const CLAUDE_READ_ONLY_ALLOWED_TOOLS = ["Read", "Glob", "Grep"] as const;
+const CLAUDE_GARRS_WRITE_TOOLS = [...CLAUDE_READ_ONLY_ALLOWED_TOOLS, "Bash"] as const;
 
 function claudeAgentSdkQueryToolsForSdk(
   tools: ClaudeAgentSdkQueryTools,
@@ -582,6 +589,24 @@ class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegi
 ) {
   override get message(): string {
     return "Claude timed out while registering its MCP tools. Retry the turn; if it keeps failing, check Claude and the server logs.";
+  }
+}
+
+class ClaudeGarrsMcpUnavailableError extends Schema.TaggedError<ClaudeGarrsMcpUnavailableError>()(
+  "ClaudeGarrsMcpUnavailableError",
+  {},
+) {
+  override get message(): string {
+    return "Garrs requires its T3 MCP session; the Claude turn was not started.";
+  }
+}
+
+class ClaudeGarrsSandboxError extends Schema.TaggedError<ClaudeGarrsSandboxError>()(
+  "ClaudeGarrsSandboxError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
   }
 }
 
@@ -1520,6 +1545,9 @@ const subagentDeviceInstructions: HookCallback = () =>
 
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
+  readonly garrs?: boolean;
+  readonly garrsReadRoots?: ReadonlyArray<string>;
+  readonly sandbox?: ClaudeQueryOptions["sandbox"];
   readonly nativeThreadId: string;
   readonly title?: string;
   readonly resume: boolean;
@@ -1530,6 +1558,7 @@ export function makeClaudeQueryOptions(input: {
   readonly sdkSettings?: string | ClaudeSdkSettings;
   readonly environment?: NodeJS.ProcessEnv;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
+  readonly threadInstructions?: string;
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
@@ -1556,7 +1585,9 @@ export function makeClaudeQueryOptions(input: {
     // The SDK replaces this flag with options.settings, so it arrives read as sdkSettings.
     settings: _launchArgSettings,
     ...extraArgs
-  } = input.settings === undefined ? {} : parseCliArgs(input.settings.launchArgs).flags;
+  } = input.garrs === true || input.settings === undefined
+    ? {}
+    : parseCliArgs(input.settings.launchArgs).flags;
   // Claude Code overwrites its CLI append text with the SDK's initialize
   // appendSystemPrompt, so launch-argument text has to travel in that value.
   // The CLI puts file text before inline text and trims one trailing newline.
@@ -1579,11 +1610,17 @@ export function makeClaudeQueryOptions(input: {
       ? undefined
       : (compiledSelection.settings as ClaudeSdkSettings);
   const querySettings =
-    selectionSettings === undefined
-      ? input.sdkSettings
-      : typeof input.sdkSettings === "object" && input.sdkSettings !== null
-        ? ({ ...input.sdkSettings, ...selectionSettings } as ClaudeSdkSettings)
-        : selectionSettings;
+    input.garrs === true
+      ? ({
+          ...selectionSettings,
+          disableAllHooks: true,
+          env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+        } as ClaudeSdkSettings)
+      : selectionSettings === undefined
+        ? input.sdkSettings
+        : typeof input.sdkSettings === "object" && input.sdkSettings !== null
+          ? ({ ...input.sdkSettings, ...selectionSettings } as ClaudeSdkSettings)
+          : selectionSettings;
   const compactQuerySettings =
     input.settings?.autoCompactWindow === undefined || input.settings.autoCompactWindow.length === 0
       ? querySettings
@@ -1601,6 +1638,8 @@ export function makeClaudeQueryOptions(input: {
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
   const options: ClaudeAgentSdkQueryOptions = {
+    ...(input.garrs === true ? { settingSources: [], strictMcpConfig: true } : {}),
+    ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
     model: compiledSelection.apiModelId,
     // T3 names threads; a supplied title skips Claude's redundant naming request.
     ...(input.title === undefined ? {} : { title: input.title }),
@@ -1621,7 +1660,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
-    ...(input.allowDangerouslySkipPermissions === true
+    ...(input.allowDangerouslySkipPermissions === true && input.garrs !== true
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     ...(requestThinkingSummaries
@@ -1646,8 +1685,21 @@ export function makeClaudeQueryOptions(input: {
     ...(input.settings?.binaryPath
       ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
       : {}),
-    ...(input.environment === undefined ? {} : { env: input.environment }),
-    ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(input.garrs === true
+      ? { env: { ...input.environment, ENABLE_CLAUDEAI_MCP_SERVERS: "false" } }
+      : input.environment === undefined
+        ? {}
+        : { env: input.environment }),
+    ...(input.mcpServers === undefined
+      ? {}
+      : {
+          mcpServers:
+            input.garrs === true
+              ? Object.fromEntries(
+                  Object.entries(input.mcpServers).filter(([name]) => name === "t3-code"),
+                )
+              : input.mcpServers,
+        }),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -1660,6 +1712,7 @@ export function makeClaudeQueryOptions(input: {
               (deviceInstructions
                 ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
                 : "")),
+        ...(input.threadInstructions === undefined ? [] : [input.threadInstructions]),
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
@@ -1670,8 +1723,13 @@ export function makeClaudeQueryOptions(input: {
   };
   const additionalDirectories = [
     ...(input.cwd === null ? [] : [input.cwd]),
-    ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
-    ...claudeLaunchArgDirectories(input.settings?.launchArgs),
+    ...(input.attachmentsDir === undefined || (input.garrs === true && input.sandbox !== undefined)
+      ? []
+      : [input.attachmentsDir]),
+    ...(input.garrs === true && input.permissionMode === "dontAsk"
+      ? (input.garrsReadRoots ?? [])
+      : []),
+    ...(input.garrs === true ? [] : claudeLaunchArgDirectories(input.settings?.launchArgs)),
   ];
   const withDirectories =
     additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
@@ -1753,6 +1811,10 @@ const readClaudeLaunchArgSettings = Effect.fn("ClaudeAdapterV2.readLaunchArgSett
 
 export const CLAUDE_T3_MCP_TOOL_WILDCARD = "mcp__t3-code__*";
 
+// The Garrs tool writes only Garrs coordination state, never the workspace; the server checks
+// each caller's role, so read-only team members keep it.
+const CLAUDE_GARRS_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = ["mcp__t3-code__garrs"];
+
 // Keep in sync with OrchestratorToolkit Tool.Readonly annotations; ClaudeAdapterV2.test.ts checks this.
 export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__orchestrator_capabilities",
@@ -1780,6 +1842,7 @@ export const CLAUDE_T3_MCP_TOOL_TIMEOUT_MS = 65 * 60 * 1_000;
 export function claudeMcpQueryOverrides(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly readOnlySandbox: boolean;
+  readonly garrs?: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
@@ -1789,9 +1852,10 @@ export function claudeMcpQueryOverrides(input: {
   if (session === undefined) {
     return input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools };
   }
-  const mcpAllowedTools = input.readOnlySandbox
-    ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
-    : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const mcpAllowedTools =
+    input.readOnlySandbox || input.garrs === true
+      ? [...CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS, ...CLAUDE_GARRS_MCP_ALLOWED_TOOLS]
+      : [CLAUDE_T3_MCP_TOOL_WILDCARD];
   return {
     allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
     mcpServers: {
@@ -2621,6 +2685,7 @@ export interface ClaudeRuntimeQueryPolicy {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly allowDangerouslySkipPermissions?: true;
   readonly installPermissionCallback: boolean;
+  readonly sandbox?: ClaudeQueryOptions["sandbox"];
 }
 
 interface ClaudeBypassAvailability {
@@ -2637,6 +2702,38 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
   runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
   availability: ClaudeBypassAvailability = CLAUDE_BYPASS_FULLY_AVAILABLE,
 ): ClaudeRuntimeQueryPolicy {
+  if (
+    runtimePolicy.garrs === true &&
+    sandboxPolicyKindForClaudeRuntimePolicy(runtimePolicy) === "workspaceWrite"
+  ) {
+    return {
+      permissionMode: "dontAsk",
+      tools: CLAUDE_GARRS_WRITE_TOOLS,
+      allowedTools: CLAUDE_GARRS_WRITE_TOOLS,
+      installPermissionCallback: false,
+      // File tools run outside Claude's shell sandbox, so writers get Bash instead of Edit/Write.
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        excludedCommands: [],
+        enableWeakerNestedSandbox: false,
+        enableWeakerNetworkIsolation: false,
+        allowAppleEvents: false,
+        filesystem: {
+          allowWrite: runtimePolicy.cwd === null ? [] : [runtimePolicy.cwd],
+          denyWrite: [...(runtimePolicy.garrsWriteDenyRoots ?? [])],
+        },
+        network: {
+          allowedDomains: [],
+          allowUnixSockets: [],
+          allowAllUnixSockets: false,
+          allowLocalBinding: false,
+        },
+      },
+    };
+  }
   const requestedMode = permissionModeForClaudeRuntimePolicy(runtimePolicy);
   const downgraded = requestedMode === "bypassPermissions" && availability.bypassDisabled;
   const permissionMode = downgraded
@@ -2775,6 +2872,7 @@ function claudeRuntimeQueryPolicyKey(policy: ClaudeRuntimeQueryPolicy): string {
     allowedTools: policy.allowedTools,
     allowDangerouslySkipPermissions: policy.allowDangerouslySkipPermissions,
     installPermissionCallback: policy.installPermissionCallback,
+    sandbox: policy.sandbox,
   });
 }
 
@@ -4146,6 +4244,8 @@ interface ActiveClaudeTurnContext {
   // Ledger growth of the steered segments; undefined once any segment's growth is unknown.
   steeredLedgerUsage: ClaudeLedgerUsage | undefined;
   readonly rootModels: Set<string>;
+  readonly reportedCost: ClaudeTurnCostState;
+  readonly costHasOverlappingWork: boolean;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly promptUuid: string | null;
@@ -4186,6 +4286,7 @@ interface ClaudeLiveQueryContext {
   readonly nativeThreadId: string;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
+  readonly reportedCost: ClaudeQueryCostState;
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
@@ -4869,6 +4970,40 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const queryPolicyForTurn = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
         ) {
+          if (turnInput.runtimePolicy.garrs === true) {
+            if (
+              sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "workspaceWrite"
+            ) {
+              const cwd = turnInput.runtimePolicy.cwd;
+              const denied = turnInput.runtimePolicy.garrsWriteDenyRoots ?? [];
+              if (cwd === null)
+                return yield* new ClaudeGarrsSandboxError({
+                  reason: "Garrs requires a verified checkout before sandboxed writing.",
+                });
+              const canonical = yield* fileSystem.realPath(cwd).pipe(Effect.option);
+              if (
+                Option.isNone(canonical) ||
+                canonical.value !== cwd ||
+                denied.length < 2 ||
+                !denied.includes(path.join(cwd, ".git")) ||
+                [cwd, ...denied].some(
+                  (root) => !path.isAbsolute(root) || root.includes("\0") || /[*?[\]]/.test(root),
+                )
+              )
+                return yield* new ClaudeGarrsSandboxError({
+                  reason:
+                    "Garrs requires canonical checkout and Git metadata paths without sandbox wildcards.",
+                });
+              for (const root of denied) {
+                const actual = yield* fileSystem.realPath(root).pipe(Effect.option);
+                if (Option.isNone(actual) || actual.value !== root)
+                  return yield* new ClaudeGarrsSandboxError({
+                    reason: "Garrs cannot verify its protected Git metadata paths.",
+                  });
+              }
+            }
+            return claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
+          }
           if (
             permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) !== "bypassPermissions"
           ) {
@@ -7551,6 +7686,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          const hasSubagents =
+            input.context.subagentsByTaskId.size > 0 || input.context.subagentsByToolUseId.size > 0;
+          const reportedCost = completeClaudeTurnCost(
+            input.context.reportedCost,
+            input.status === "completed" && input.result?.subtype === "success",
+            input.result !== undefined,
+            hasSubagents || input.context.costHasOverlappingWork,
+          );
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           if (input.context.compaction?.status === "running") {
             const reason = input.result?.subtype === "success" ? input.result.result.trim() : "";
@@ -7735,8 +7878,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
                     input.result,
-                    input.context.subagentsByTaskId.size > 0 ||
-                      input.context.subagentsByToolUseId.size > 0,
+                    hasSubagents,
                     input.status,
                     input.context.steeredSegmentUsage,
                     {
@@ -7749,6 +7891,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                               resultLedgerUsage.get(input.result),
                             ),
                           }),
+                      ...(reportedCost === undefined ? {} : { reportedCost }),
                     },
                   ),
                 },
@@ -8526,6 +8669,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (yield* Ref.get(activeTurn)) ??
             (yield* settledTurnForSubagentFrame(liveQuery.nativeThreadId, message));
           if (context === null) {
+            if (message.type === "result") liveQuery.reportedCost.totalUsd = null;
             yield* applyWorkflowProgressWithoutTurn(message);
             // Buffer wake evidence before clearing the task from the roster.
             if (message.type === "system" && message.subtype === "task_notification") {
@@ -8604,6 +8748,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const event = message.event;
             const reasoning = context.reasoning;
             if (event.type === "message_start") {
+              if (input.replayed !== true && typeof event.message.model === "string")
+                context.rootModels.add(event.message.model);
               reasoning.messageId = event.message.id;
               reasoning.streamBlocks.clear();
               const usage: ClaudeMessageUsage | undefined = event.message.usage;
@@ -8987,6 +9133,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const parentToolUseId = message.parent_tool_use_id;
             const snapshotModel =
               typeof message.message.model === "string" ? message.message.model.trim() : "";
+            if (parentToolUseId === null) context.rootModels.add(snapshotModel);
             // "<synthetic>" identifies CLI notices, not the subagent model.
             const model =
               snapshotModel.length === 0 || snapshotModel === "<synthetic>"
@@ -9584,6 +9731,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (resultsReportingNewContextWindow.has(message) && contextUsage !== undefined) {
               yield* emitContextUsage(context, contextUsage);
             }
+            if (input.replayed !== true) observeClaudeTurnCost(context.reportedCost, message);
             const completedAt = yield* DateTime.now;
             const interrupted = (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
             const wasSteered = (yield* Ref.get(steeredTurns)).has(context.providerTurnId);
@@ -10383,8 +10531,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) {
           const queryPolicy = yield* queryPolicyForTurn(turnInput);
           const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          if (turnInput.runtimePolicy.garrs === true && mcpSession === undefined) {
+            return yield* new ClaudeGarrsMcpUnavailableError();
+          }
           const mcpOverrides = claudeMcpQueryOverrides({
             mcpSession,
+            ...(turnInput.runtimePolicy.garrs === true ? { garrs: true } : {}),
             readOnlySandbox:
               sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
             ...(queryPolicy.allowedTools === undefined
@@ -10507,6 +10659,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
+            ...(turnInput.runtimePolicy.garrs === true ? { garrs: true } : {}),
+            ...(turnInput.runtimePolicy.garrsReadRoots === undefined
+              ? {}
+              : { garrsReadRoots: turnInput.runtimePolicy.garrsReadRoots }),
             nativeThreadId,
             title: turnInput.appThread.title,
             resume: shouldResume,
@@ -10525,6 +10681,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : undefined,
             ),
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
+            ...(queryPolicy.sandbox === undefined ? {} : { sandbox: queryPolicy.sandbox }),
             ...(mcpOverrides.allowedTools === undefined
               ? {}
               : { allowedTools: mcpOverrides.allowedTools }),
@@ -10532,6 +10689,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            ...(turnInput.runtimePolicy.instructions === undefined
+              ? {}
+              : { threadInstructions: turnInput.runtimePolicy.instructions }),
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}
@@ -10584,6 +10744,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeThreadId,
             query: querySession,
             queryPolicyKey,
+            reportedCost: makeClaudeQueryCostState(),
             selection: compiledSelection,
             closed,
             lastTurn: null,
@@ -10804,6 +10965,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               steeredSegmentUsage: [],
               steeredLedgerUsage: { inputTokens: 0, outputTokens: 0 },
               rootModels: new Set(),
+              reportedCost: beginClaudeTurnCost(
+                querySession.reportedCost,
+                /^\/clear(?:\s|$)/.test(turnInput.message.text.trim()),
+              ),
+              costHasOverlappingWork:
+                isClaudeProviderContinuationTurn(turnInput) ||
+                [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].some(
+                  (member) => member.task.status === "running",
+                ),
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               promptUuid,

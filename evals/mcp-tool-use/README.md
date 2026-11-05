@@ -31,6 +31,22 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
 
+## Garrs cases
+
+`cases/garrs.ndjson` covers read-only diagnosis, delegation, delivery with evidence,
+bounded temporary helpers and work involving multiple projects. It also checks
+that unavailable project context blocks cross-project writes without claiming completion.
+Authorized blocker recovery also checks that Garras replans within the existing scope
+and budget without requesting the same permission again.
+`setup.garrsRole: "garras"` uses the coordinator text from `GarrsInstructions.ts`;
+`"botas"` and `"kex"` use the real member instructions for synthetic read-only tasks. All
+use the default team configuration, and the
+advertised `garrs` schema comes from the server toolkit. Claude receives that
+text through its query options. The Codex replay places the same text in a
+developer message, which approximates its application-context transport. The
+tool results are scripted: these cases measure model decisions, not actual
+agent execution, persistence, or provider permissions.
+
 ## Device manager cases
 
 `cases/device-manager.ndjson` ports nine mechanisms from the [device-routing investigation described in #25661](https://github.com/pingdotgg/t3code/pull/25661) and adds seven cases from t3dotgg’s 2026-10-26 fleet device investigation. All prompts, files, hosts and prior turns are authored Acme data; the fleet cases cite finding ids without carrying source transcripts or identifiers.

@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  ProjectId,
   ProviderInstanceId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -18,6 +19,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
@@ -112,6 +114,8 @@ const probe = {
   ],
 };
 const ProbeToolkit = Toolkit.make(
+  Tool.make("garrs", probe),
+  Tool.make("t3_thread_read", probe),
   Tool.make("reads", probe),
   Tool.make("reads_as_caller", probe),
   Tool.make("acts_as_caller", probe),
@@ -132,6 +136,8 @@ const ProbeToolkit = Toolkit.make(
 );
 const ran = Effect.succeed({ ran: "ran" });
 const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
+  garrs: McpToolAccess.actsAsCaller(() => ran),
+  t3_thread_read: McpToolAccess.reads(() => ran),
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
@@ -178,6 +184,8 @@ export const refusedAtCompileTime = () => {
     ProbeToolkit,
     // @ts-expect-error a handlers layer that skipped `McpToolAccess.toLayer`
     ProbeToolkit.toLayer({
+      garrs: unchecked,
+      t3_thread_read: unchecked,
       reads: unchecked,
       reads_as_caller: unchecked,
       acts_as_caller: unchecked,
@@ -242,6 +250,68 @@ const fullAccessLinkedClient: McpInvocationContext.McpInvocationScope = {
   client: { ...fullAccessClient.client!, linked: true },
 };
 const previewOnly = { ...fullAccess, capabilities: new Set(["preview"] as const) };
+
+it.effect(
+  "rejects mutating MCP tools for a read-only Garrs thread while leaving ordinary threads unchanged",
+  () =>
+    Effect.gen(function* () {
+      expect(yield* call("writes", fullAccess)).toBe("capability_denied");
+      expect(yield* call("acts_as_caller", fullAccess)).toBe("capability_denied");
+      expect(yield* call("garrs", fullAccess)).toBe("ran");
+      expect(yield* call("t3_thread_read", fullAccess)).toBe("ran");
+      expect(yield* call("writes", supervised)).toBe("ran");
+      expect(yield* call("writes", fullAccessClient)).toBe("ran");
+    }).pipe(
+      Effect.provide(
+        probeServer(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+          }),
+        ).pipe(
+          Layer.provide(
+            Layer.mock(GarrsStore.GarrsStore)({
+              getThread: (threadId) =>
+                Effect.succeed(
+                  threadId === fullAccessThreadId
+                    ? {
+                        threadId,
+                        projectId: ProjectId.make("project"),
+                        agentId: "copito",
+                        attemptId: null,
+                        readOnly: true,
+                        instructions: "",
+                        configRevision: 0,
+                      }
+                    : null,
+                ),
+            }),
+          ),
+        ),
+      ),
+    ),
+);
+
+it.effect("denies mutating MCP tools when the Garrs membership lookup fails", () =>
+  call("writes", fullAccess).pipe(
+    Effect.map((outcome) => expect(outcome).toBe("capability_denied")),
+    Effect.provide(
+      probeServer(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+        }),
+      ).pipe(
+        Layer.provide(
+          Layer.mock(GarrsStore.GarrsStore)({
+            getThread: () =>
+              Effect.fail(
+                new GarrsStore.GarrsStoreError({ operation: "read thread", cause: "unavailable" }),
+              ),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
 
 it.effect.each([
   ["reads", ended, {}, "ran"],

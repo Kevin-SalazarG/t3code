@@ -16,7 +16,10 @@ import {
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
+  GarrsTaskId,
+  GarrsWorkItemId,
   OrchestratorMcpTaskRole,
+  ProjectId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -45,12 +48,18 @@ import {
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
+import { defaultTeamConfig } from "../../apps/server/src/garrs/GarrsDomain.ts";
+import {
+  garrasInstructions,
+  memberInstructions,
+} from "../../apps/server/src/garrs/GarrsInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
 import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
+import { GarrsToolkit } from "../../apps/server/src/mcp/toolkits/garrs/tools.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
@@ -246,6 +255,7 @@ export const McpToolUseCase = Schema.Struct({
   privacy: Schema.optional(Schema.Literals(["commit-safe", "private"])),
   setup: Schema.Struct({
     role: Schema.Literals(["top", "delegated-child", "native-subagent"]),
+    garrsRole: Schema.optional(Schema.Literals(["garras", "botas", "kex", "asta", "copito"])),
     /** Runs only on this harness, for cases whose right answer depends on it. */
     harness: Schema.optional(Schema.Literals(["claude", "codex"])),
     /** The Linked environments beta is on, so T3 lists its link tools. */
@@ -395,6 +405,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PreviewToolkit,
   DeviceToolkit,
   HtmlToolkit,
+  GarrsToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -433,7 +444,38 @@ const visibleT3Tools = (options: { readonly subagent?: boolean; readonly links?:
  * T3's Claude Code options for an eval thread: its system prompt append and its hooks. `device` says
  * whether the thread holds the `device` capability, as agent device access decides.
  */
-const claudeQueryOptions = (model: Model, device = true) => {
+type GarrsEvalRole = false | true | "botas" | "kex" | "asta" | "copito";
+const garrsEvalInstructions = (role: Exclude<GarrsEvalRole, false>) =>
+  role === true
+    ? garrasInstructions(defaultTeamConfig())
+    : memberInstructions(defaultTeamConfig(), {
+        id: GarrsTaskId.make("eval-task"),
+        workItemId: GarrsWorkItemId.make("eval-work"),
+        projectId: ProjectId.make("project-api"),
+        planRevision: 1,
+        key:
+          role === "asta" ? "plan-1" : role === "copito" ? "copito-formal-review" : "diagnose-api",
+        agentId: role,
+        title: "Diagnose the API",
+        objective: "Investigate the timeout",
+        reason: "Backend owner",
+        inputs: [],
+        deliverables: ["Diagnosis"],
+        acceptanceCriteria: ["Evidence"],
+        dependsOn: [],
+        capability: "read",
+        status: "running",
+        statusReason: null,
+        generation: 0,
+        attemptCount: 1,
+        pinnedSelection: null,
+        pinnedBy: null,
+        completionArtifactId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+const claudeQueryOptions = (model: Model, device = true, garrs: GarrsEvalRole = false) => {
   // Refs whose device text follows the capability read deviceToolsAvailable; older ones ignore it.
   const input: Parameters<typeof makeClaudeQueryOptions>[0] & {
     readonly deviceToolsAvailable?: boolean;
@@ -444,13 +486,14 @@ const claudeQueryOptions = (model: Model, device = true) => {
     cwd: null,
     mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
     deviceToolsAvailable: device,
+    ...(garrs ? { threadInstructions: garrsEvalInstructions(garrs) } : {}),
   };
   return makeClaudeQueryOptions(input);
 };
 
 /** Text T3 appends to Claude Code's system prompt. Delegated children get the same text. */
-export const t3SystemAppend = (model: Model, device = true) => {
-  const { systemPrompt } = claudeQueryOptions(model, device);
+export const t3SystemAppend = (model: Model, device = true, garrs: GarrsEvalRole = false) => {
+  const { systemPrompt } = claudeQueryOptions(model, device, garrs);
   if (isRecord(systemPrompt) && systemPrompt.type === "preset" && systemPrompt.append) {
     return systemPrompt.append;
   }
@@ -537,6 +580,7 @@ export const buildBase = (
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
+    readonly garrs?: GarrsEvalRole;
   },
 ) => {
   const t3 = visibleT3Tools(options);
@@ -555,7 +599,9 @@ export const buildBase = (
   const nativeDeferred = deferredList.split("\n").filter((name) => name && !isT3Name(name));
   const names = [...nativeDeferred, ...t3.map((tool) => tool.name)].toSorted().join("\n");
   const { model } = options;
-  const append = options.nativeSubagent ? "" : t3SystemAppend(model, options.deviceAccess);
+  const append = options.nativeSubagent
+    ? ""
+    : t3SystemAppend(model, options.deviceAccess, options.garrs);
   const modelLine = `You are powered by the model named ${MODELS[model]}. The exact model ID is ${model}.`;
   const joined = systemTexts.join("\n");
   // The capture's home directory names its user. Cases use `/home/user` paths instead.
@@ -619,6 +665,7 @@ const buildCodexBase = (
     readonly links?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
+    readonly garrs?: GarrsEvalRole;
   },
 ): Base => {
   const t3 = visibleT3Tools(options);
@@ -659,6 +706,7 @@ const buildCodexBase = (
   input.push(
     ...Object.entries(context).map(([key, entry]) => message(`<${key}>${entry.value}</${key}>`)),
   );
+  if (options.garrs) input.push(message(garrsEvalInstructions(options.garrs)));
   const nativeTools = input
     .flatMap((item) =>
       item.type === "additional_tools" && Array.isArray(item.tools)
@@ -2176,6 +2224,7 @@ const main = Effect.gen(function* () {
     role: McpToolUseCase["setup"]["role"],
     deviceAccess: boolean,
     links: boolean,
+    garrs: GarrsEvalRole = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -2187,6 +2236,7 @@ const main = Effect.gen(function* () {
               subagent: role === "delegated-child",
               links,
               deviceAccess,
+              garrs,
             }),
           ),
         )
@@ -2199,6 +2249,7 @@ const main = Effect.gen(function* () {
               nativeSubagent: role === "native-subagent",
               links,
               deviceAccess,
+              garrs,
             });
             return role === "native-subagent"
               ? Effect.promise(() => t3SubagentContext(flags.model, deviceAccess)).pipe(
@@ -2209,18 +2260,31 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}`;
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.garrsRole ?? "none"}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:none", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links] = key.split(":") as [
+    const [role = "top", access, links, garrs] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
       string,
       string,
+      string,
     ];
-    bases.set(key, yield* buildFor(role, access === "true", links === "true"));
+    bases.set(
+      key,
+      yield* buildFor(
+        role,
+        access === "true",
+        links === "true",
+        garrs === "garras"
+          ? true
+          : garrs === "botas" || garrs === "kex" || garrs === "asta" || garrs === "copito"
+            ? garrs
+            : false,
+      ),
+    );
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";

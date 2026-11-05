@@ -140,6 +140,7 @@ export interface CreateWorktreeProgress {
 }
 
 export interface CreateWorktreeOptions {
+  readonly disableHooks?: boolean;
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;

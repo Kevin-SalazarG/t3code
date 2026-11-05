@@ -59,6 +59,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { knownProviderFailureMessage } from "@t3tools/provider-core/server/failure";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   ACP_EMPTY_OPTION_VALUE,
@@ -3921,6 +3922,101 @@ describe("AcpAdapterV2", () => {
       );
       assert.equal(runtimeOrdinalSeen, 2);
       assert.lengthOf(runtimeInputs, 2);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("runs Garrs members inside the macOS sandbox and refuses unconfined processes", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcess.Platform) !== "darwin") return;
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const project = yield* fileSystem.makeTempDirectoryScoped({ prefix: "acp-garrs-" });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: project,
+        garrs: true,
+        instructions: "GARRS-ROLE-BRIEF",
+        sandboxPolicy: { type: "readOnly" },
+      });
+      const run = Effect.fnUntraced(function* (name: string, forwardSandbox: boolean) {
+        const instanceId = ProviderInstanceId.make(`acp-test-garrs-${name}`);
+        const threadId = ThreadId.make(`thread-acp-garrs-${name}`);
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-acp-garrs"),
+          threadId,
+          providerSessionId: `mcp-session-acp-garrs-${name}`,
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer garrs-token",
+          browserToolsAvailable: false,
+        });
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const inputs: Array<AcpAdapterV2RuntimeInput> = [];
+        const makeRuntime = makeMockRuntime({ childProcessSpawner, mockAgentPath, protocolEvents });
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: (runtimeInput) => {
+              inputs.push(runtimeInput);
+              const { osSandbox: _dropped, ...unconfined } = runtimeInput;
+              return makeRuntime(forwardSandbox ? runtimeInput : unconfined);
+            },
+          },
+          selfInvocation,
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`provider-session-acp-garrs-${name}`),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const started = yield* runtime
+          .startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              runtimePolicy,
+              now: yield* DateTime.now,
+            }),
+          )
+          .pipe(Effect.exit);
+        return { inputs, protocolEvents, runtime, started };
+      });
+
+      const confined = yield* run("confined", true);
+      assert.isTrue(Exit.isSuccess(confined.started));
+      const terminal = yield* confined.runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.runHead,
+      );
+      assert.equal(Option.getOrThrow(terminal).status, "completed");
+      assert.include(confined.inputs[0]!.osSandbox!.protectedRoots, project);
+      const logged = JSON.stringify(yield* Queue.takeAll(confined.protocolEvents));
+      assert.include(logged, "GARRS-ROLE-BRIEF");
+
+      const unconfined = yield* run("unconfined", false);
+      assert.isTrue(Exit.isFailure(unconfined.started));
+      assert.include(
+        knownProviderFailureMessage(
+          Exit.isFailure(unconfined.started) ? unconfined.started.cause : undefined,
+        ),
+        "operating-system sandbox",
+      );
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

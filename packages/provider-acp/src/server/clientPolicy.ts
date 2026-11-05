@@ -9,6 +9,8 @@ export interface AcpRuntimePolicy {
   readonly cwd: string | null;
   readonly approvalPolicy?: unknown;
   readonly sandboxPolicy?: unknown;
+  /** Garrs ACP turns start only inside T3's OS sandbox, which bounds what any tool can write. */
+  readonly garrs?: boolean | undefined;
 }
 
 export type AcpPermissionDisposition = "allow" | "ask" | "deny";
@@ -166,7 +168,9 @@ function acpOperationDisposition(
           ? "allow"
           : "deny";
       }
-      return "deny";
+      // Agents label commands inconsistently (DeepSeek reports every tool as "other");
+      // the OS sandbox, not the label, bounds a confined writer.
+      return runtimePolicy.garrs === true ? "allow" : "deny";
     case "dangerFullAccess":
     case "externalSandbox":
       return "allow";

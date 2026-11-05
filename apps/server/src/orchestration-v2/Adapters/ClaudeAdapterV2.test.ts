@@ -238,6 +238,75 @@ function makeClaudeTestTurnInput(input: {
 }
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
+  it("keeps Garrs writes inside the mandatory shell sandbox and protects Git metadata", () => {
+    const policy = ClaudeAdapterV2.claudeRuntimeQueryPolicyForRuntimePolicy(
+      ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: "/isolated/checkout",
+        garrs: true,
+        garrsWriteDenyRoots: ["/isolated/checkout/.git", "/project/.git"],
+        sandboxPolicy: { type: "workspaceWrite" },
+      }),
+    );
+    assert.equal(policy.permissionMode, "dontAsk");
+    assert.deepEqual(policy.tools, ["Read", "Glob", "Grep", "Bash"]);
+    assert.deepEqual(policy.allowedTools, ["Read", "Glob", "Grep", "Bash"]);
+    assert.deepInclude(policy.sandbox, {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: true,
+    });
+    assert.deepEqual(policy.sandbox?.filesystem, {
+      allowWrite: ["/isolated/checkout"],
+      denyWrite: ["/isolated/checkout/.git", "/project/.git"],
+    });
+    assert.deepEqual(policy.sandbox?.network?.allowedDomains, []);
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "garrs-writer",
+      resume: false,
+      cwd: "/isolated/checkout",
+      garrs: true,
+      attachmentsDir: "/outside/attachments",
+      ...policy,
+    });
+    assert.deepEqual(options.sandbox, policy.sandbox);
+    assert.include(options.allowedTools ?? [], "Bash");
+    assert.notInclude(options.tools as string[], "Write");
+    assert.notInclude(options.tools as string[], "Edit");
+    assert.notInclude(options.tools as string[], "Agent");
+    assert.deepEqual(options.additionalDirectories, ["/isolated/checkout"]);
+  });
+  it("isolates Garrs Claude sessions from inherited MCP and permission overrides", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "garrs",
+      resume: false,
+      cwd: "/workspace",
+      garrs: true,
+      permissionMode: "dontAsk",
+      tools: ["Read", "Glob", "Grep"],
+      garrsReadRoots: ["/validated/other-project"],
+      settings: {
+        ...DEFAULT_CLAUDE_SETTINGS,
+        launchArgs: "--dangerously-skip-permissions --add-dir /other --verbose",
+      },
+      sdkSettings: { permissions: { allow: ["mcp__external__*"] } },
+      mcpServers: { "t3-code": { type: "http", url: "http://localhost" } },
+    });
+    assert.equal(options.permissionMode, "dontAsk");
+    assert.deepEqual(options.settingSources, []);
+    assert.equal(options.strictMcpConfig, true);
+    assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+    assert.notProperty(options.extraArgs ?? {}, "dangerously-skip-permissions");
+    assert.notProperty(options.extraArgs ?? {}, "verbose");
+    assert.notInclude(options.additionalDirectories ?? [], "/other");
+    assert.include(options.additionalDirectories ?? [], "/validated/other-project");
+    assert.deepEqual(options.tools, ["Read", "Glob", "Grep"]);
+    assert.notProperty(options.settings as object, "permissions");
+  });
   it.each([
     "-- --thinking-display omitted",
     "--thinking-display summarized -- --thinking-display omitted",
@@ -538,10 +607,21 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       allowedTools: [
         ...ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS,
         ...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+        // Writes only Garrs coordination state; the server checks the caller's role.
+        "mcp__t3-code__garrs",
       ],
       mcpServers: T3_MCP_SERVERS,
     });
     assert.isFalse(overrides.allowedTools?.includes(ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD));
+    assert.deepEqual(
+      ClaudeAdapterV2.claudeMcpQueryOverrides({
+        mcpSession,
+        readOnlySandbox: false,
+        garrs: true,
+        allowedTools: [...ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS],
+      }),
+      overrides,
+    );
   });
 
   it("invalidates live-query reuse when MCP credentials rotate", () => {
@@ -567,6 +647,20 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       }),
     );
     assert.notEqual(rotatedKey, initialKey);
+    assert.notEqual(
+      ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
+        {
+          ...queryPolicy,
+          sandbox: {
+            enabled: true,
+            failIfUnavailable: true,
+            filesystem: { denyWrite: ["/protected/.git"] },
+          },
+        },
+        ClaudeAdapterV2.claudeMcpQueryOverrides({ mcpSession, readOnlySandbox: false }),
+      ),
+      initialKey,
+    );
   });
 
   it("matches the read-only allowlist to the orchestrator toolkit annotations", () => {
@@ -2978,6 +3072,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly uuid: string;
     readonly result: string;
     readonly numTurns?: number;
+    readonly totalCostUsd?: number;
     readonly origin?: { readonly kind: "task-notification" };
     readonly subtype?: string;
     readonly isError?: boolean;
@@ -3002,7 +3097,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       num_turns: input.numTurns ?? 1,
       result: input.result,
       stop_reason: "end_turn",
-      total_cost_usd: 0,
+      total_cost_usd: input.totalCostUsd ?? 0,
       usage: input.usage ?? {
         input_tokens: 1,
         output_tokens: 1,
@@ -5638,6 +5733,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             uuid: "00000000-0000-4000-8000-000000000901",
             result: "",
             terminalReason,
+            totalCostUsd: 0.25,
             usage: {
               input_tokens: 600,
               output_tokens: 40,
@@ -5655,6 +5751,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             makeResultFrame({
               uuid: "00000000-0000-4000-8000-000000000902",
               result: "Audit finished after the steer.",
+              totalCostUsd: 0.75,
               usage: {
                 input_tokens: 3,
                 output_tokens: 6,
@@ -5695,6 +5792,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               cachedInputTokens: queryExits ? 2000 : 11455,
               cacheCreationTokens: queryExits ? 500 : 2847,
               ...(queryExits ? {} : { models: ["claude-sonnet-4-6"] }),
+              reportedCost: {
+                amountUsd: queryExits ? 0.25 : 0.75,
+                source: "provider_api_report",
+                scope: "query_delta",
+                status: queryExits ? "partial" : "complete",
+              },
             },
           );
         }
@@ -7031,6 +7134,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           : [],
       );
       assert.deepEqual(reportedContext, [2]);
+      const completed = harness.events.findLast((event) => event.type === "provider_turn.updated");
+      if (completed?.type === "provider_turn.updated")
+        assert.deepEqual(completed.providerTurn.turnTokenUsage?.models, ["claude-sonnet-4-6"]);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -14194,6 +14300,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             makeResultFrame({
               uuid: "00000000-0000-4000-8000-000000000208",
               result: "Spawned the subagent.",
+              totalCostUsd: 0.5,
             }),
           );
           yield* Queue.take(harness.terminalReceipts);
@@ -14214,6 +14321,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           const child = harness.events.find((event) => event.type === "app_thread.created");
           assert.equal(child?.appThread.modelSelection?.model, initialModel ?? parentModel);
+          const completed = harness.events.findLast(
+            (event) => event.type === "provider_turn.updated",
+          );
+          assert.equal(completed?.type, "provider_turn.updated");
+          if (completed?.type === "provider_turn.updated") {
+            assert.deepEqual(completed.providerTurn.turnTokenUsage?.models, [parentModel]);
+            assert.isUndefined(completed.providerTurn.turnTokenUsage?.reportedCost);
+          }
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

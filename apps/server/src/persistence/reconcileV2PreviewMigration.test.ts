@@ -27,6 +27,29 @@ const seedPreview = Effect.gen(function* () {
 });
 
 describe("V2 preview upgrade", () => {
+  it.effect("adds Garrs after the published schema without changing its migration history", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 79 });
+      const history = yield* sql`
+        SELECT migration_id, name, created_at FROM effect_sql_migrations ORDER BY migration_id
+      `;
+      assert.deepStrictEqual(yield* runMigrations(), [[80, "GarrsCore"]]);
+      assert.deepStrictEqual(
+        yield* sql`
+          SELECT migration_id, name, created_at FROM effect_sql_migrations
+          WHERE migration_id <= 79 ORDER BY migration_id
+        `,
+        history,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'garrs_threads'`,
+        [{ name: "garrs_threads" }],
+      );
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("upgrades a published preview without replaying V2 or losing import progress", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -59,6 +82,7 @@ describe("V2 preview upgrade", () => {
         [77, "RepairBooleanSettledOverride"],
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
+        [80, "GarrsCore"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -161,6 +185,7 @@ describe("V2 preview upgrade", () => {
         [77, "RepairBooleanSettledOverride"],
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
+        [80, "GarrsCore"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

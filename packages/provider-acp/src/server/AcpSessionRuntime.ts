@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { type AcpOsSandbox, wrapCommandForOsSandbox } from "./osSandbox.ts";
 
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -124,6 +125,8 @@ export interface AcpSessionRuntimeOptions {
   /** Authenticate before opening: Antigravity selects its credential source from the method. */
   readonly authenticateEagerly?: boolean;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  /** Confine the agent process tree's filesystem writes; spawning fails when unavailable. */
+  readonly osSandbox?: AcpOsSandbox;
   /** Sent on every session/new, load, resume and fork; omitting them clears an agent's stored roots. */
   readonly additionalDirectories?: ReadonlyArray<string>;
   /** Session `_meta`, chosen from the negotiated agent before each session setup or activation. */
@@ -1169,6 +1172,8 @@ export class AcpSessionRuntime extends Context.Service<
     ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
     readonly terminateProcessGroup?: Effect.Effect<void, AcpProcessGroupTerminationError>;
+    /** The confinement this process was spawned under. */
+    readonly osSandbox?: AcpOsSandbox;
     readonly setMode: (
       modeId: string,
     ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
@@ -1371,12 +1376,38 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ),
     );
 
-  const spawnCommand =
+  const resolvedSpawnCommand =
     options.spawn.shell === false
       ? { command: options.spawn.command, args: options.spawn.args, shell: false }
       : yield* resolveSpawnCommand(options.spawn.command, options.spawn.args, {
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
+        });
+  const osSandbox = options.osSandbox;
+  const sandboxPlatform = yield* HostProcess.Platform;
+  const spawnCommand =
+    osSandbox === undefined
+      ? resolvedSpawnCommand
+      : yield* Effect.try({
+          try: () => {
+            if (resolvedSpawnCommand.shell) throw new Error("Shell launches cannot be confined.");
+            return {
+              ...wrapCommandForOsSandbox({
+                sandbox: osSandbox,
+                home: homeDirectory,
+                platform: sandboxPlatform,
+                command: resolvedSpawnCommand.command,
+                args: resolvedSpawnCommand.args,
+                env:
+                  options.spawn.extendEnv === false
+                    ? (options.spawn.env ?? {})
+                    : { ...process.env, ...options.spawn.env },
+              }),
+              shell: false,
+            };
+          },
+          catch: (cause) =>
+            new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
         });
   const linuxCgroupLease =
     options.ownDescendantProcessGroups === true && options.processGroupPlatform === "linux"
@@ -2719,6 +2750,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ),
     notify: (method, payload) =>
       ensureConnected.pipe(Effect.andThen(acp.raw.notify(method, payload))),
+    ...(osSandbox === undefined ? {} : { osSandbox }),
   } satisfies AcpSessionRuntime["Service"];
 });
 

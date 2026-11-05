@@ -125,6 +125,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as GarrsService from "./garrs/GarrsService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
@@ -1396,6 +1397,7 @@ export const layerWsRpc = (
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const garrs = yield* GarrsService.GarrsService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2273,6 +2275,22 @@ export const layerWsRpc = (
               Effect.as(commandOutputHub.subscribe(input)),
             ),
           ),
+        [WS_METHODS.garrsGetConfig]: () => garrs.getConfig(),
+        [WS_METHODS.garrsUpdateConfig]: (input) => garrs.updateConfig(input),
+        [WS_METHODS.garrsGetProjectBinding]: (input) => garrs.getProjectBinding(input.projectId),
+        [WS_METHODS.garrsUpdateProjectBinding]: (input) => garrs.updateProjectBinding(input),
+        [WS_METHODS.garrsStartConversation]: (input) => garrs.startConversation(input),
+        [WS_METHODS.garrsSubscribeProject]: (input) => garrs.subscribeProject(input.projectId),
+        [WS_METHODS.garrsSubscribeWorkItem]: (input) => garrs.subscribeWorkItem(input.workItemId),
+        [WS_METHODS.garrsControl]: (input) =>
+          Effect.annotateCurrentSpan({ "garrs.work_item_id": input.workItemId }).pipe(
+            Effect.andThen(garrs.control(input)),
+          ),
+        [WS_METHODS.garrsExportConfig]: (input) => garrs.exportConfig(input.projectId),
+        [WS_METHODS.garrsImportConfig]: (input) => garrs.importConfig(input),
+        [WS_METHODS.garrsGetUsage]: (input) => garrs.getUsage(input),
+        [WS_METHODS.garrsListMemory]: (input) => garrs.listMemory(input.projectId),
+        [WS_METHODS.garrsMutateMemory]: (input) => garrs.mutateMemory(input),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
@@ -3421,6 +3439,7 @@ export const layer = Layer.unwrap(
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+    const garrsService = yield* GarrsService.GarrsService;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sql = yield* SqlClient.SqlClient;
@@ -3511,6 +3530,7 @@ export const layer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(Layer.succeed(GarrsService.GarrsService, garrsService)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

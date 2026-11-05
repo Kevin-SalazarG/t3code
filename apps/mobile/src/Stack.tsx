@@ -120,6 +120,8 @@ import {
 } from "./features/settings/SettingsOpenSourceLicensesRouteScreen";
 import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
+import { GarrsProjectRouteScreen } from "./features/garrs/GarrsProjectRouteScreen";
+import { GarrsWorkItemRouteScreen } from "./features/garrs/GarrsWorkItemRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
@@ -331,6 +333,16 @@ const SETTINGS_SCREENS = {
     screen: SettingsProjectOverviewRouteScreen,
     linking: "settings/project",
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Projects" },
+  }),
+  SettingsGarrs: createNativeStackScreen({
+    screen: GarrsProjectRouteScreen,
+    linking: "settings/garrs/:environmentId/:projectId",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Garrs" },
+  }),
+  SettingsGarrsWorkItem: createNativeStackScreen({
+    screen: GarrsWorkItemRouteScreen,
+    linking: "settings/garrs/:environmentId/:projectId/work/:workItemId",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Work item" },
   }),
   SettingsKeyboard: createNativeStackScreen({
     screen: SettingsKeyboardRouteScreen,

@@ -40,6 +40,9 @@ import {
 } from "@t3tools/shared/git";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
+import * as GarrsWorktreeSafety from "../garrs/GarrsWorktreeSafety.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -103,6 +106,8 @@ export interface ThreadLaunchInput {
   readonly linkOrigin?: OrchestrationV2LinkOrigin;
   /** The parent there, when that environment's agent delegated this as a task. */
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
+  /** Server-created work shown inside this thread instead of in thread lists. */
+  readonly parentThreadId?: ThreadId;
 }
 
 type PreparationInput = Pick<
@@ -203,6 +208,8 @@ function failureDetail(error: unknown): string {
 
 const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
+  const garrs = yield* Effect.serviceOption(GarrsStore.GarrsStore);
+  const vcs = yield* Effect.serviceOption(VcsProcess.VcsProcess);
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
   const terminals = yield* TerminalManager.TerminalManager;
@@ -306,6 +313,11 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+    const garrsMember = Option.isNone(garrs)
+      ? null
+      : yield* garrs.value
+          .getThread(threadId)
+          .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
 
     const reused = input.reusedWorktree;
     const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
@@ -434,6 +446,20 @@ const make = Effect.gen(function* () {
         ) {
           branch = flattenTemporaryWorktreeBranchName(branch);
         }
+        if (garrsMember !== null) {
+          if (Option.isNone(vcs))
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )("Cannot verify checkout filters and submodules.");
+          const reason = yield* GarrsWorktreeSafety.worktreeSafety(
+            project.workspaceRoot,
+            startRef,
+          ).pipe(Effect.provideService(VcsProcess.VcsProcess, vcs.value));
+          if (reason !== null)
+            return yield* mapError(input, "provision-worktree", threadId)(reason);
+        }
         yield* setupTracker.stageStatus(threadId, "checkout", "running");
         const worktree = yield* git
           .createWorktree(
@@ -445,6 +471,7 @@ const make = Effect.gen(function* () {
               path: null,
             },
             {
+              ...(garrsMember === null ? {} : { disableHooks: true }),
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {
@@ -583,7 +610,7 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const setup =
-        worktreePath === null
+        worktreePath === null || garrsMember !== null
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
@@ -948,6 +975,9 @@ const make = Effect.gen(function* () {
                 ...(input.delegatedFrom === undefined
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),
+                ...(input.parentThreadId === undefined
+                  ? {}
+                  : { parentThreadId: input.parentThreadId }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });

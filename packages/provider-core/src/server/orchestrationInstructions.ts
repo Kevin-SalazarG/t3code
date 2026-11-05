@@ -71,6 +71,8 @@ export interface T3AcpInstructionState {
   readonly interactionMode: ProviderInteractionMode;
   readonly hasT3Mcp: boolean;
   readonly hasDeviceTools: boolean;
+  /** Server-owned role instructions for this thread, such as a Garrs member's brief. */
+  readonly threadInstructions?: string;
 }
 
 /** ACP lacks system/developer fields; inject context on first prompt and tool/mode changes. */
@@ -84,7 +86,8 @@ export function t3AcpPromptWithInstructions(input: {
   if (
     input.previousState?.interactionMode === input.state.interactionMode &&
     input.previousState.hasT3Mcp === input.state.hasT3Mcp &&
-    input.previousState.hasDeviceTools === input.state.hasDeviceTools
+    input.previousState.hasDeviceTools === input.state.hasDeviceTools &&
+    input.previousState.threadInstructions === input.state.threadInstructions
   ) {
     return input.prompt;
   }
@@ -100,6 +103,7 @@ export function t3AcpPromptWithInstructions(input: {
           T3_CODE_ACP_MCP_FALLBACK_INSTRUCTIONS,
         ]
       : []),
+    ...(input.state.threadInstructions?.trim() ? [input.state.threadInstructions.trim()] : []),
   ];
   return `<t3_code_instructions>\n${instructions.join("\n\n")}\n</t3_code_instructions>\n\n<user_request>\n${input.prompt}\n</user_request>`;
 }

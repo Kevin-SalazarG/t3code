@@ -56,6 +56,16 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
+  /** Server-owned role instructions for this thread, delivered as system or developer context. */
+  instructions: Schema.optional(Schema.String),
+  /** This thread belongs to the server-managed Garrs team. */
+  garrs: Schema.optional(Schema.Boolean),
+  /** Server-validated directories for a read-only Garrs review. */
+  garrsReadRoots: Schema.optional(Schema.Array(Schema.String)),
+  /** Canonical Git metadata paths that a Garrs writer must never modify. */
+  garrsWriteDenyRoots: Schema.optional(Schema.Array(Schema.String)),
+  /** Canonical project roots a Garrs writer's isolated checkout must leave untouched. */
+  garrsProtectedRoots: Schema.optional(Schema.Array(Schema.String)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

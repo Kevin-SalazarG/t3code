@@ -152,6 +152,56 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect("preserves long UTF-8 role instructions within each Codex context limit", () =>
+    Effect.gen(function* () {
+      const instructions = `Review rules: ${"🦊".repeat(2000)}`;
+      const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-garrs",
+        codexInput: [{ type: "text", text: "Review" }],
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: null,
+          sandboxPolicy: { type: "readOnly" },
+          instructions,
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      });
+      const entries = Object.entries(params.additionalContext ?? {})
+        .filter(([key]) => key.startsWith("t3_code_thread_"))
+        .map(([, entry]) => entry);
+      assert.isTrue(entries.length > 1);
+      assert.isTrue(entries.every((entry) => Buffer.byteLength(entry.value, "utf8") <= 4000));
+      assert.equal(entries.map((entry) => entry.value).join(""), instructions);
+      assert.isTrue(entries.every((entry) => entry.kind === "application"));
+      assert.equal(params.sandboxPolicy?.type, "readOnly");
+      const writer = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-writer",
+        codexInput: [{ type: "text", text: "Implement" }],
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: "/worktree",
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: [],
+            excludeSlashTmp: true,
+            excludeTmpdirEnvVar: true,
+            networkAccess: true,
+          },
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      });
+      assert.deepEqual(writer.sandboxPolicy, {
+        type: "workspaceWrite",
+        writableRoots: [],
+        excludeSlashTmp: true,
+        excludeTmpdirEnvVar: true,
+        networkAccess: true,
+      });
+    }),
+  );
+
   it.effect.each([undefined, false, true])(
     "selects native collaboration modes without prompt overrides with hasT3Mcp=%s",
     (hasT3Mcp) =>
@@ -1587,6 +1637,50 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
   );
+
+  it("approves only the Garrs MCP tool for Garrs threads", () => {
+    const session = {
+      environmentId: EnvironmentId.make("environment"),
+      threadId: ThreadId.make("thread"),
+      providerSessionId: "session",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      endpoint: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer test",
+      browserToolsAvailable: false,
+    };
+    const ordinary = CodexAdapterV2.codexThreadRuntimeParams({
+      threadId: session.threadId,
+      mcpSession: session,
+      runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+    });
+    const garrs = CodexAdapterV2.codexThreadRuntimeParams({
+      threadId: session.threadId,
+      mcpSession: session,
+      runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, garrs: true },
+      garrsMcpServers: ["external", "server.with.dots", "t3-code"],
+    });
+    assert.notProperty(ordinary.config["mcp_servers.t3-code"] as object, "tools");
+    const garrsServers = garrs.config.mcp_servers as Record<string, object>;
+    assert.deepInclude(garrsServers["t3-code"], {
+      tools: { garrs: { approval_mode: "approve" } },
+    });
+    assert.deepEqual(garrsServers.external, { enabled: false });
+    assert.deepEqual(garrsServers["server.with.dots"], { enabled: false });
+    assert.equal(garrs.config["features.apps"], false);
+    assert.equal(garrs.config["features.plugins"], false);
+    for (const feature of [
+      "hooks",
+      "multi_agent",
+      "browser_use",
+      "browser_use_external",
+      "computer_use",
+    ]) {
+      assert.equal(garrs.config[`features.${feature}`], false);
+      assert.notProperty(ordinary.config, `features.${feature}`);
+    }
+    assert.notProperty(ordinary.config, "features.apps");
+    assert.notProperty(ordinary.config, "features.plugins");
+  });
 
   it.effect("adds the session MCP server without replacing launch-argument servers", () =>
     Effect.gen(function* () {

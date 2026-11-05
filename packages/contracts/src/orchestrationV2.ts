@@ -2920,6 +2920,11 @@ export const OrchestrationV2Command = Schema.Union([
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /**
+     * Server-created work that lives inside another thread's view (a Garrs attempt).
+     * Honored only for `creationSource: "server"` and a parent in the same project.
+     */
+    parentThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({

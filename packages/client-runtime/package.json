@@ -227,6 +227,10 @@
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
     },
+    "./state/garrs": {
+      "types": "./src/state/garrs.ts",
+      "default": "./src/state/garrs.ts"
+    },
     "./state/peerLinks": {
       "types": "./src/state/peerLinks.ts",
       "default": "./src/state/peerLinks.ts"

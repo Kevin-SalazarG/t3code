@@ -3088,6 +3088,30 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
     ) {
+      if (
+        turnInput.runtimePolicy.garrs === true &&
+        typeof turnInput.runtimePolicy.sandboxPolicy === "object" &&
+        turnInput.runtimePolicy.sandboxPolicy !== null &&
+        "type" in turnInput.runtimePolicy.sandboxPolicy &&
+        turnInput.runtimePolicy.sandboxPolicy.type === "readOnly"
+      ) {
+        return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+          driver: OPENCODE_PROVIDER,
+          detail: "OpenCode cannot guarantee Garrs read-only isolation.",
+        });
+      }
+      if (
+        turnInput.runtimePolicy.garrs === true &&
+        typeof turnInput.runtimePolicy.sandboxPolicy === "object" &&
+        turnInput.runtimePolicy.sandboxPolicy !== null &&
+        "type" in turnInput.runtimePolicy.sandboxPolicy &&
+        turnInput.runtimePolicy.sandboxPolicy.type === "workspaceWrite"
+      ) {
+        return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+          driver: OPENCODE_PROVIDER,
+          detail: "OpenCode cannot guarantee Garrs workspace isolation.",
+        });
+      }
       const mcpSession = yield* mcpSessions.read(turnInput.threadId);
       const directory = turnInput.runtimePolicy.cwd ?? host.paths.cwd;
       const name = yield* mcpServerNameFor(turnInput.threadId);
@@ -3131,9 +3155,31 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           );
         if (mcpAvailable) state.mcp = wanted;
       }
+      if (turnInput.runtimePolicy.garrs === true) {
+        if (!mcpAvailable)
+          return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: OPENCODE_PROVIDER,
+            detail: "Garrs requires T3 MCP; it is unavailable to this OpenCode server.",
+          });
+        const servers = yield* client.mcp
+          .list({ location: { directory } })
+          .pipe(Effect.timeout(INVENTORY_TIMEOUT), Effect.option);
+        if (
+          servers._tag === "None" ||
+          !servers.value.data.some(
+            (server) => server.name === name && server.status.status === "connected",
+          )
+        ) {
+          return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: OPENCODE_PROVIDER,
+            detail: "Garrs requires T3 MCP; OpenCode has not connected to it.",
+          });
+        }
+      }
       const instructions = [
         buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
+        turnInput.runtimePolicy.instructions,
       ]
         .filter((part) => part !== undefined && part.length > 0)
         .join("\n\n");

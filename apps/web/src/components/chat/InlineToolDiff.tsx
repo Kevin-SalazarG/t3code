@@ -55,7 +55,15 @@ export function InlineToolDiff(props: {
   }
   const patch = toolCallDiff(item).patch;
   if (!patch?.trim()) return null;
-  const { lines, hiddenCount } = parseInlineDiff(patch, INLINE_DIFF_LINE_LIMIT);
+  return <InlinePatch patch={patch} onOpenFullDiff={props.onOpenFullDiff} />;
+}
+
+/** A unified patch as compact numbered lines, the chat's inline diff look. */
+export function InlinePatch(props: {
+  readonly patch: string;
+  readonly onOpenFullDiff?: (() => void) | undefined;
+}) {
+  const { lines, hiddenCount } = parseInlineDiff(props.patch, INLINE_DIFF_LINE_LIMIT);
   if (lines.length === 0) return null;
   return (
     <div className="overflow-hidden rounded-md border border-border/45">

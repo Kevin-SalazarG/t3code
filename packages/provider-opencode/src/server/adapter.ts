@@ -2966,6 +2966,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             system: [
               orchestrationSystemPrompt,
               buildRuntimeInstructions({ harness: "OpenCode", model: turn.modelSelection.model }),
+              turn.runtimePolicy.instructions,
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -3158,6 +3159,36 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             }),
           startTurn: Effect.fn("OpencodeAdapter.startTurn")(
             function* (turnInput) {
+              if (turnInput.runtimePolicy.garrs === true) {
+                if (
+                  recordString(recordValue(turnInput.runtimePolicy, "sandboxPolicy"), "type") ===
+                  "readOnly"
+                ) {
+                  return yield* protocolError(
+                    "OpenCode cannot guarantee Garrs read-only isolation.",
+                  );
+                }
+                if (
+                  recordString(recordValue(turnInput.runtimePolicy, "sandboxPolicy"), "type") ===
+                  "workspaceWrite"
+                ) {
+                  return yield* protocolError(
+                    "OpenCode cannot guarantee Garrs workspace isolation.",
+                  );
+                }
+                if (!hasT3Mcp)
+                  return yield* protocolError(
+                    "Garrs requires T3 MCP; it is unavailable to this OpenCode server.",
+                  );
+                const status = yield* OpenCodeRuntime.runOpenCodeSdk("mcp.status", (signal) =>
+                  client.mcp.status(undefined, { signal, throwOnError: true }),
+                );
+                if (status.data?.["t3-code"]?.status !== "connected") {
+                  return yield* protocolError(
+                    "Garrs requires T3 MCP; OpenCode has not connected to it.",
+                  );
+                }
+              }
               if (nativeStreamFailure !== null) {
                 return yield* protocolError(
                   "OpenCode event stream has ended; reconnect the provider session before starting another turn.",

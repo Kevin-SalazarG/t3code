@@ -46,6 +46,8 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -127,6 +129,8 @@ interface HarnessOptions {
   readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
+  readonly garrsThread?: boolean;
+  readonly garrsUnsafeCheckout?: boolean;
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -238,6 +242,23 @@ function makeHarness(options: HarnessOptions = {}) {
         layerThreadManagement,
         layerReceipts,
         IdAllocator.layer,
+        Layer.mock(GarrsStore.GarrsStore)({
+          getThread: () =>
+            Effect.succeed(options.garrsThread ? ({ readOnly: false } as never) : null),
+        }),
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) =>
+            Effect.succeed({
+              exitCode: input.args.includes("config") && !options.garrsUnsafeCheckout ? 1 : 0,
+              stdout:
+                input.args.includes("config") && options.garrsUnsafeCheckout
+                  ? "filter.test.smudge\ntouch marker\0"
+                  : "",
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            } as never),
+        }),
       ),
     ),
   );
@@ -2320,6 +2341,64 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
         harness.deleteLocalBranch.mock.calls[0]?.[0].refName,
         harness.createWorktree.mock.calls[0]?.[0].newRefName,
       );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("skips project setup scripts for Garrs worktree preparation", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({ garrsThread: true });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:garrs:no-setup",
+          thread: "thread:garrs:no-setup",
+          message: "Work",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter(
+          (snapshot) =>
+            snapshot?.stages.some((stage) => stage.id === "agent" && stage.status === "done") ===
+            true,
+        ),
+        Stream.runHead,
+      );
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+      assert.equal(harness.createWorktree.mock.calls[0]?.[1]?.disableHooks, true);
+      assert.equal(
+        (yield* tracker.get(launched.threadId))?.stages.find((stage) => stage.id === "setup-script")
+          ?.status,
+        "skipped",
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("rejects unsafe Garrs worktree preparation before creating the worktree", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({ garrsThread: true, garrsUnsafeCheckout: true });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:garrs:unsafe",
+          thread: "thread:garrs:unsafe",
+          message: "Work",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((snapshot) => snapshot?.phase === "failed"),
+        Stream.runHead,
+      );
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+      assert.include((yield* tracker.get(launched.threadId))?.error ?? "", "checkout filters");
     }).pipe(Effect.provide(harness.layer));
   }),
 );

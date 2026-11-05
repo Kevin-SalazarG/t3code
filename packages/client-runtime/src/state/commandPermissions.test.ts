@@ -14,6 +14,8 @@ import {
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  CommandId,
+  GarrsWorkItemId,
   ThreadId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -65,6 +67,40 @@ const setup = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   return registry;
 });
+
+it.effect.each(["approve_commit", "approve_push"] as const)(
+  "requires source control permission for Garrs %s",
+  (type) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const command = createCommandPermissions(runtime, WS_METHODS.garrsControl);
+        const input = {
+          commandId: CommandId.make("approval"),
+          workItemId: GarrsWorkItemId.make("work"),
+          action: { type, proposalId: "proposal" },
+        };
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(command.permissionAtom(env, input))).toBe(false);
+        expect(yield* command.authorize(registry, env, input).pipe(Effect.flip)).toMatchObject({
+          requiredPermission: AuthSourceControlWriteScope,
+        });
+        expect(
+          registry.get(command.permissionAtom(env, { ...input, action: { type: "pause" } })),
+        ).toBe(true);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(true),
+            scopes: [AuthOrchestrationOperateScope, AuthSourceControlWriteScope],
+            permissions: [AuthOrchestrationOperateScope, AuthSourceControlWriteScope],
+          }),
+        );
+        expect(registry.get(command.permissionAtom(env, input))).toBe(true);
+        yield* command.authorize(registry, env, input);
+      }),
+    ),
+);
 
 describe("command permissions", () => {
   it.effect("requires the destination read grant to refresh providers", () =>

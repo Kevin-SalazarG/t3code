@@ -75,6 +75,7 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import {
@@ -111,6 +112,8 @@ import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
+import { garrsEnvironment } from "../state/garrs";
+import { dispatchMenuAction } from "../shortcuts/dispatcher";
 import { serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
@@ -463,6 +466,14 @@ function OpenCommandPaletteDialog(props: {
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
+  const garrsBinding = useEnvironmentQuery(
+    activeThread?.projectId
+      ? garrsEnvironment.binding({
+          environmentId: activeThread.environmentId,
+          input: { projectId: activeThread.projectId },
+        })
+      : null,
+  );
   const paletteRouteTarget = useThreadRouteTarget();
   const projects = useProjects();
   const referenceThreadRef =
@@ -1228,6 +1239,18 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+
+  if (activeThread !== null && garrsBinding.data?.binding.enabled === true) {
+    actionItems.push({
+      kind: "action",
+      value: "action:garrs",
+      title: "Open Garrs team",
+      searchTerms: ["garrs", "garras", "team", "agents"],
+      icon: <UsersRoundIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "garrs.toggle",
+      run: async () => dispatchMenuAction("garrs.toggle"),
+    });
+  }
 
   if (projects.length > 0) {
     const activeProjectTitle =

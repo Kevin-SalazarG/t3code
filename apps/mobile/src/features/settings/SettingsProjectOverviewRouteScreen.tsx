@@ -37,6 +37,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import {
   useSettingsEnvironmentMenu,
@@ -148,6 +149,7 @@ function ProjectOverviewContent(props: {
   const [draftName, setDraftName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const threads = useThreadShells();
+  const navigation = useNavigation();
   const allMembers = props.group.members.map((member) => member.project);
   const removableEnvironments = useEnvironmentsWithScope(allMembers, AuthOrchestrationOperateScope);
   const canRemoveGroup = props.members.every((member) =>
@@ -377,6 +379,30 @@ function ProjectOverviewContent(props: {
           />
         </SettingsSection>
       ) : null}
+
+      <SettingsSection title="Garrs">
+        {props.members.map((member) => (
+          <ListRow
+            key={`${member.environmentId}:${member.id}`}
+            icon="person.2"
+            label={
+              props.members.length > 1
+                ? `Garrs on ${
+                    props.environments.find((entry) => entry.environmentId === member.environmentId)
+                      ?.label ?? "this environment"
+                  }`
+                : "Garrs team"
+            }
+            description="Chat with Garras, follow the team's work and control it."
+            onPress={() =>
+              navigation.navigate("SettingsGarrs", {
+                environmentId: member.environmentId,
+                projectId: member.id,
+              })
+            }
+          />
+        ))}
+      </SettingsSection>
 
       <SettingsSection title="Checkouts">
         {props.members.map((member, index) => {

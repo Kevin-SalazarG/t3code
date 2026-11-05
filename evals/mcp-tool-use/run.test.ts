@@ -330,6 +330,89 @@ it("rebuilds the template from this checkout and sends a child T3's task prompt"
   assert.notEqual(prompt?.text, childCase.prompt);
 });
 
+it("adds the real Garrs coordinator instructions and MCP schema only to a Garrs role", () => {
+  const garras = buildBase(template, {
+    model: "claude-sonnet-5-5",
+    keepUserInstructions: false,
+    garrs: true,
+  });
+  const normal = buildBase(template, {
+    model: "claude-sonnet-5-5",
+    keepUserInstructions: false,
+  });
+  assert.include(
+    garras.system.map((block) => String(block.text)).join("\n"),
+    "# Garrs team: you are the coordinator",
+  );
+  assert.notInclude(
+    normal.system.map((block) => String(block.text)).join("\n"),
+    "# Garrs team: you are the coordinator",
+  );
+  const garrsTool = garras.t3.find((tool) => tool.name === "mcp__t3-code__garrs");
+  assert.isDefined(garrsTool);
+  assert.include(JSON.stringify(garrsTool?.input_schema), "start_work");
+});
+
+it("injects the real Botas instructions for helper cases", () => {
+  const botas = buildBase(template, {
+    model: "claude-sonnet-5-5",
+    keepUserInstructions: false,
+    garrs: "botas",
+  });
+  const instructions = botas.system.map((block) => String(block.text)).join("\n");
+  assert.include(instructions, "request_helper");
+  assert.include(instructions, "minutes (1-15)");
+  assert.notInclude(instructions, "# Garrs team: you are the coordinator");
+});
+
+it("grades bounded helpers and refuses cross-project changes without verified context", () => {
+  const cases = NodeFS.readFileSync(new URL("./cases/garrs.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line));
+  const helper = cases.find((entry) => entry.id === "garrs-helper-bounded")!;
+  const call = (minutes: number): SampleRun => ({
+    calls: [
+      {
+        step: 0,
+        tool: "garrs",
+        input: {
+          action: "request_helper",
+          input: {
+            objective: "Revisa api/errors.log",
+            reason: "Comprobación independiente",
+            minutes,
+          },
+        },
+      },
+    ],
+    text: "",
+    stopReason: "end_turn",
+  });
+  assert.deepEqual(failed(helper.expect, call(10)), []);
+  assert.isNotEmpty(failed(helper.expect, call(0)));
+  assert.isNotEmpty(failed(helper.expect, call(11)));
+  const writes = cases.find((entry) => entry.id === "garrs-multiproject-context-unavailable")!;
+  assert.deepEqual(
+    failed(writes.expect, {
+      calls: [{ step: 0, tool: "garrs", input: { action: "status" } }],
+      text: "No se puede modificar ambos proyectos en este momento.",
+      stopReason: "end_turn",
+    }),
+    [],
+  );
+  assert.isNotEmpty(
+    failed(writes.expect, {
+      calls: [
+        { step: 0, tool: "garrs", input: { action: "status" } },
+        { step: 1, tool: "garrs", input: { action: "start_work", input: { access: "write" } } },
+      ],
+      text: "No se puede modificar ambos proyectos.",
+      stopReason: "end_turn",
+    }),
+  );
+});
+
 it("lists link tools only while a case turns the beta on, and sends chips as T3 projects them", () => {
   const off = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
   const on = buildBase(template, {

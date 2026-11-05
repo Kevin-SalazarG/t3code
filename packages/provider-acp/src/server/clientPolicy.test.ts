@@ -315,6 +315,25 @@ describe("client terminal disposition", () => {
         "deny",
       );
     }
+    const garrsWriter = {
+      runtimeMode: "full-access" as const,
+      cwd,
+      garrs: true,
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
+    };
+    assert.equal(acpClientExecuteDisposition(garrsWriter), "allow");
+    assert.equal(
+      acpPermissionDisposition(garrsWriter, {
+        sessionId: "session",
+        toolCall: { toolCallId: "call", kind: "other" },
+        options: [],
+      }),
+      "allow",
+    );
+    assert.equal(
+      acpClientExecuteDisposition({ ...garrsWriter, sandboxPolicy: { type: "readOnly" } }),
+      "deny",
+    );
   });
 });
 

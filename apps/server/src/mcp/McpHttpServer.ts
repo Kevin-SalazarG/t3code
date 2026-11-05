@@ -27,6 +27,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -77,6 +78,8 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import * as GarrsHandlers from "./toolkits/garrs/handlers.ts";
+import { GarrsToolkit } from "./toolkits/garrs/tools.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { requestUrl } from "../requestUrl.ts";
 
@@ -1062,6 +1065,80 @@ const provideRegistrationServices = <Services>() =>
         ),
     ),
   );
+const GARRS_READ_ONLY_MCP_TOOLS = new Set([
+  "garrs",
+  "orchestrator_capabilities",
+  "list_scheduled_tasks",
+  "task_status",
+  "t3_background_wait",
+  "t3_thread_list",
+  "t3_thread_read",
+  "t3_thread_search",
+  "t3_thread_wait",
+  "t3_project_list",
+  "t3_project_read",
+  "t3_worktree_status",
+  "t3_worktree_list",
+  "t3_environment_read",
+  "t3_environment_links",
+  "t3_preview_list",
+]);
+
+const withGarrsAccess = Effect.fn("McpHttpServer.withGarrsAccess")(function* <A, E, R>(
+  registration: Effect.Effect<A, E, R>,
+) {
+  const server = yield* McpServer.McpServer;
+  const store = yield* Effect.serviceOption(GarrsStore.GarrsStore);
+  if (Option.isNone(store)) return yield* registration;
+  const guarded = McpServer.McpServer.of({
+    ...server,
+    addTool: Effect.fn("McpServer.addTool")(function (options) {
+      if (GARRS_READ_ONLY_MCP_TOOLS.has(options.tool.name)) return server.addTool(options);
+      return server.addTool({
+        ...options,
+        handle: Effect.fnUntraced(function* (payload) {
+          const invocation = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+          const threadId = Option.isSome(invocation)
+            ? invocation.value.thread?.threadId
+            : undefined;
+          if (threadId !== undefined) {
+            const member = yield* store.value.getThread(threadId).pipe(
+              Effect.map((record) =>
+                record === null
+                  ? null
+                  : record.readOnly
+                    ? ("read-only" as const)
+                    : ("writer" as const),
+              ),
+              Effect.orElseSucceed(() => "read-only" as const),
+            );
+            if (member !== null) {
+              const message =
+                member === "read-only"
+                  ? "This tool is unavailable to a read-only Garrs member."
+                  : "This tool is unavailable to a Garrs writer; use the assigned checkout and Garrs tools.";
+              return new McpSchema.CallToolResult({
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      member === "read-only"
+                        ? '{"code":"capability_denied","message":"This tool is unavailable to a read-only Garrs member."}'
+                        : '{"code":"capability_denied","message":"This tool is unavailable to a Garrs writer; use the assigned checkout and Garrs tools."}',
+                  },
+                ],
+                structuredContent: { code: "capability_denied", message },
+              });
+            }
+          }
+          return yield* options.handle(payload);
+        }),
+      });
+    }),
+  });
+  return yield* registration.pipe(Effect.provideService(McpServer.McpServer, guarded));
+});
 
 /**
  * Tools declare their handler services as request-level dependencies. Those
@@ -1073,8 +1150,10 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
   Layer.effectDiscard(
-    withToolAnalytics(
-      withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+    withGarrsAccess(
+      withToolAnalytics(
+        withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+      ),
     ),
   ).pipe(
     Layer.provide(
@@ -1090,7 +1169,7 @@ const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, 
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
-  Layer.effectDiscard(withToolAnalytics(register)).pipe(
+  Layer.effectDiscard(withGarrsAccess(withToolAnalytics(register))).pipe(
     Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
   );
 
@@ -1142,6 +1221,8 @@ export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
 );
+
+const layerGarrsToolkit = toolkitRegistration(GarrsToolkit, GarrsHandlers.layer);
 
 export const layerPullRequestsToolkit = toolkitRegistration(
   PullRequestsToolkit,
@@ -1205,6 +1286,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerGarrsToolkit,
 );
 
 export const layer = layerMcpTransport(layerTools);

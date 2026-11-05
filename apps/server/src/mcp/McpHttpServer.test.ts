@@ -35,6 +35,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
+import * as GarrsStore from "../garrs/GarrsStore.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as ServerConfig from "../config.ts";
@@ -508,6 +509,36 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     expect(calls[3]).toEqual(calls[2]);
     expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
   }).pipe(Effect.provide(layerRecordingTools(calls)));
+});
+
+it.effect("blocks mutating T3 MCP tools for Garrs writers while preserving read tools", () => {
+  const calls: Array<unknown> = [];
+  const layer = layerRecordingTools(calls).pipe(
+    Layer.provide(
+      Layer.mock(GarrsStore.GarrsStore)({
+        getThread: (id) =>
+          Effect.succeed({
+            threadId: id,
+            projectId: "project-1" as never,
+            agentId: "botas",
+            attemptId: null,
+            readOnly: false,
+            instructions: "",
+            configRevision: 0,
+          }),
+      }),
+    ),
+  );
+  return Effect.gen(function* () {
+    const write = yield* callTool("t3_project_update", {
+      projectId: "project-1",
+      projectIcon: null,
+    });
+    expect(write.structuredContent).toMatchObject({ code: "capability_denied" });
+    expect(calls).toHaveLength(0);
+    yield* callTool("t3_thread_read", { threadId: "thread-null-arguments" });
+    expect(calls).toHaveLength(1);
+  }).pipe(Effect.provide(layer));
 });
 
 it.effect(

@@ -2820,6 +2820,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
+    const parent =
+      command.parentThreadId === undefined || command.creationSource !== "server"
+        ? null
+        : yield* projectionStore.getThread(command.parentThreadId).pipe(
+            Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+    const lineage =
+      parent !== null && parent.projectId === command.projectId && parent.deletedAt === null
+        ? {
+            parentThreadId: parent.id,
+            relationshipToParent: "subagent" as const,
+            rootThreadId: parent.lineage.rootThreadId,
+          }
+        : { parentThreadId: null, relationshipToParent: null, rootThreadId: command.threadId };
+
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
@@ -2841,11 +2859,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
-      lineage: {
-        parentThreadId: null,
-        relationshipToParent: null,
-        rootThreadId: command.threadId,
-      },
+      lineage,
       forkedFrom: null,
       createdAt: now,
       updatedAt: now,

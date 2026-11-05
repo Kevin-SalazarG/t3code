@@ -3,6 +3,10 @@ import {
   claudeLedgerDelta,
   claudeModelLedger,
   normalizeClaudeTurnTokenUsage,
+  beginClaudeTurnCost,
+  completeClaudeTurnCost,
+  makeClaudeQueryCostState,
+  observeClaudeTurnCost,
 } from "./ClaudeTurnTokenUsage.ts";
 import {
   accumulateCodexTurnTokenUsage,
@@ -122,6 +126,20 @@ describe("billable native turn usage", () => {
     ).toBe("unavailable");
     expect(
       normalizeClaudeTurnTokenUsage(
+        { subtype: "success", usage: { input_tokens: 0, output_tokens: 0 } },
+        false,
+        "failed",
+      ).usageStatus,
+    ).toBe("unavailable");
+    expect(
+      normalizeClaudeTurnTokenUsage(
+        { subtype: "success", usage: { input_tokens: 0, output_tokens: 0 } },
+        false,
+        "completed",
+      ),
+    ).toMatchObject({ usageStatus: "complete", inputTokens: 0, outputTokens: 0 });
+    expect(
+      normalizeClaudeTurnTokenUsage(
         {
           subtype: "success",
           usage: {
@@ -222,14 +240,109 @@ describe("billable native turn usage", () => {
     expect(claudeModelLedger({})).toBeUndefined();
   });
 
-  it("adds Claude steering segments to the final measured result once", () => {
+  it("adds Claude steering segments once and preserves the ledger, response model and cost", () => {
+    const reportedCost = {
+      amountUsd: 0.25,
+      source: "provider_api_report" as const,
+      scope: "query_delta" as const,
+      status: "complete" as const,
+    };
     expect(
       normalizeClaudeTurnTokenUsage(
         { subtype: "success", usage: { input_tokens: 5, output_tokens: 3 } },
         false,
         "completed",
         [{ input_tokens: 4, output_tokens: 2 }],
+        {
+          rootModels: new Set(["claude-real"]),
+          ledger: { inputTokens: 12, outputTokens: 8 },
+          reportedCost,
+        },
       ),
-    ).toMatchObject({ usageStatus: "complete", inputTokens: 9, outputTokens: 5 });
+    ).toMatchObject({
+      usageStatus: "complete",
+      inputTokens: 9,
+      outputTokens: 5,
+      otherUsage: { inputTokens: 3, outputTokens: 3 },
+      models: ["claude-real"],
+      reportedCost,
+    });
+  });
+
+  it("retains only actual reported Claude models even when token usage is missing", () => {
+    expect(
+      normalizeClaudeTurnTokenUsage(undefined, false, "failed", [], {
+        rootModels: new Set(["<synthetic>", " ", "claude-real", "claude-real"]),
+      }),
+    ).toMatchObject({ usageStatus: "unavailable", models: ["claude-real"] });
+  });
+});
+
+describe("Claude reported query cost", () => {
+  it("differences cumulative query totals across turns and does not sum steering results", () => {
+    const query = makeClaudeQueryCostState();
+    const first = beginClaudeTurnCost(query);
+    const steered = { uuid: "steered", subtype: "error_during_execution", total_cost_usd: 0.25 };
+    observeClaudeTurnCost(first, steered);
+    observeClaudeTurnCost(first, steered);
+    observeClaudeTurnCost(first, { uuid: "first-final", subtype: "success", total_cost_usd: 0.75 });
+    expect(completeClaudeTurnCost(first, true, true, false)).toEqual({
+      amountUsd: 0.75,
+      source: "provider_api_report",
+      scope: "query_delta",
+      status: "complete",
+    });
+    const second = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(second, { uuid: "second-final", subtype: "success", total_cost_usd: 1 });
+    expect(completeClaudeTurnCost(second, true, true, false)?.amountUsd).toBe(0.25);
+    const cleared = beginClaudeTurnCost(query, true);
+    observeClaudeTurnCost(cleared, { uuid: "cleared", subtype: "success", total_cost_usd: 1.5 });
+    expect(completeClaudeTurnCost(cleared, true, true, false)).toBeUndefined();
+    const restarted = beginClaudeTurnCost(makeClaudeQueryCostState());
+    observeClaudeTurnCost(restarted, {
+      uuid: "resumed-final",
+      subtype: "success",
+      total_cost_usd: 0.5,
+    });
+    expect(completeClaudeTurnCost(restarted, true, true, false)?.amountUsd).toBe(0.5);
+  });
+
+  it("omits resets, invalid totals, overlapping turns and ambiguous native subagent costs", () => {
+    for (const amount of [Number.NaN, -1, undefined]) {
+      const turn = beginClaudeTurnCost(makeClaudeQueryCostState());
+      observeClaudeTurnCost(turn, { uuid: "invalid", subtype: "success", total_cost_usd: amount });
+      expect(completeClaudeTurnCost(turn, true, true, false)).toBeUndefined();
+    }
+    const query = makeClaudeQueryCostState();
+    const first = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(first, { uuid: "first", subtype: "success", total_cost_usd: 1 });
+    completeClaudeTurnCost(first, true, true, false);
+    const reset = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(reset, { uuid: "reset", subtype: "success", total_cost_usd: 0.25 });
+    expect(completeClaudeTurnCost(reset, true, true, false)).toBeUndefined();
+    const child = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(child, { uuid: "child", subtype: "success", total_cost_usd: 0.5 });
+    expect(completeClaudeTurnCost(child, true, true, true)).toBeUndefined();
+    const overlap = beginClaudeTurnCost(query);
+    beginClaudeTurnCost(query);
+    observeClaudeTurnCost(overlap, { uuid: "overlap", subtype: "success", total_cost_usd: 0.75 });
+    expect(completeClaudeTurnCost(overlap, true, true, false)).toBeUndefined();
+  });
+
+  it("keeps a measured partial delta but invalidates the next baseline after a missing final result", () => {
+    const query = makeClaudeQueryCostState();
+    const first = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(first, {
+      uuid: "segment",
+      subtype: "error_during_execution",
+      total_cost_usd: 0.25,
+    });
+    expect(completeClaudeTurnCost(first, false, false, false)).toMatchObject({
+      amountUsd: 0.25,
+      status: "partial",
+    });
+    const next = beginClaudeTurnCost(query);
+    observeClaudeTurnCost(next, { uuid: "next", subtype: "success", total_cost_usd: 0.5 });
+    expect(completeClaudeTurnCost(next, true, true, false)).toBeUndefined();
   });
 });

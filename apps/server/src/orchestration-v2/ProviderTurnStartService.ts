@@ -28,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -161,6 +162,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const garrs = yield* Effect.serviceOption(GarrsStore.GarrsStore);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
@@ -640,6 +642,22 @@ export const layer: Layer.Layer<
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
         if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+          const membership = Option.isNone(garrs)
+            ? null
+            : yield* garrs.value
+                .getThread(projection.thread.id)
+                .pipe(Effect.orElseSucceed(() => "unavailable" as const));
+          if (membership !== null) {
+            const message =
+              "Garrs cannot recreate a missing checkout automatically; inspect the worktree and start a new work item.";
+            yield* settleStartFailure({
+              signal: "garrs-worktree-recreate-blocked",
+              title: "Garrs checkout unavailable",
+              error: new Error(message),
+              message,
+            });
+            return;
+          }
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),

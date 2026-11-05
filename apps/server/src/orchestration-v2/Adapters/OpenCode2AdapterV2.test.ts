@@ -41,6 +41,7 @@ import { TestClock } from "effect/testing";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
@@ -2826,6 +2827,192 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           .findLast((node) => node.id === item?.nodeId)?.status,
         "failed",
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "restores role instructions and validates the connected MCP server on a resumed session",
+    () =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* mcpSessions.set({
+          environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+          threadId,
+          providerSessionId: "mcp:opencode2-adapter",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer thread-credential",
+          browserToolsAvailable: false,
+        });
+        yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
+        const server = "t3-code-thread_opencode2-adapter";
+        const role = "ROLE-TEST";
+        const instructions = [
+          buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model }),
+          t3OrchestrationSystemPrompt(true, false),
+          role,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const runtime = yield* openCode2ReplayRuntime([
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+          ...noOpenRequests,
+          out("mcp.add", {
+            server,
+            "location[directory]": WORK,
+            config: {
+              type: "remote",
+              url: "http://127.0.0.1:3773/mcp",
+              headers: { Authorization: "Bearer thread-credential" },
+              oauth: false,
+            },
+          }),
+          reply("mcp.add", null),
+          out("mcp.list", { "location[directory]": WORK }),
+          reply("mcp.list", {
+            location: { directory: WORK },
+            data: [{ name: server, status: { status: "connected" } }],
+          }),
+          out("session.instructions.entry.put", {
+            sessionID: SESSION,
+            key: "t3-code",
+            value: instructions,
+          }),
+          reply("session.instructions.entry.put", null),
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+          out("mcp.remove", { server, "location[directory]": WORK }),
+          reply("mcp.remove", null),
+        ]);
+        const thread = yield* runtime.resumeThread({
+          providerThread: providerThread(yield* DateTime.now),
+          threadId,
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        });
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        yield* runtime.startTurn({
+          ...turnInput(thread),
+          runtimePolicy: { ...policy(), instructions: role, garrs: true },
+        });
+        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        yield* runtime.unloadThread!({ providerThread: thread });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps ordinary thread instructions working without Garrs MCP", () =>
+    Effect.gen(function* () {
+      const instructions = [
+        buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model }),
+        "ORDINARY-THREAD",
+      ].join("\n\n");
+      const runtime = yield* openCode2ReplayRuntime([
+        ...opening,
+        out("session.get", { sessionID: SESSION }),
+        replyData("session.get", sessionInfo()),
+        ...noOpenRequests,
+        out("session.instructions.entry.put", {
+          sessionID: SESSION,
+          key: "t3-code",
+          value: instructions,
+        }),
+        reply("session.instructions.entry.put", null),
+        out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+        promptAccepted,
+        event("session.execution.succeeded", { sessionID: SESSION }),
+      ]);
+      const thread = yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+      });
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      yield* runtime.startTurn({
+        ...turnInput(thread),
+        runtimePolicy: { ...policy(), instructions: "ORDINARY-THREAD" },
+      });
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses role turns when MCP is unavailable or read-only isolation is requested", () =>
+    Effect.gen(function* () {
+      const { runtime, thread } = yield* resumed([]);
+      const role = { ...policy(), instructions: "ROLE-TEST", garrs: true };
+      assert.equal(
+        (yield* Effect.result(runtime.startTurn({ ...turnInput(thread), runtimePolicy: role })))
+          ._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* Effect.result(
+          runtime.startTurn({
+            ...turnInput(thread),
+            runtimePolicy: { ...role, sandboxPolicy: { type: "readOnly" } },
+          }),
+        ))._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* Effect.result(
+          runtime.startTurn({
+            ...turnInput(thread),
+            runtimePolicy: { ...role, sandboxPolicy: { type: "workspaceWrite" } },
+          }),
+        ))._tag,
+        "Failure",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses a role turn when the registered MCP server is disconnected", () =>
+    Effect.gen(function* () {
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* mcpSessions.set({
+        environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+        threadId,
+        providerSessionId: "mcp:opencode2-adapter",
+        providerInstanceId: instanceId,
+        endpoint: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer thread-credential",
+        browserToolsAvailable: false,
+      });
+      yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
+      const server = "t3-code-thread_opencode2-adapter";
+      const { runtime, thread } = yield* resumed([
+        out("mcp.add", {
+          server,
+          "location[directory]": WORK,
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:3773/mcp",
+            headers: { Authorization: "Bearer thread-credential" },
+            oauth: false,
+          },
+        }),
+        reply("mcp.add", null),
+        out("mcp.list", { "location[directory]": WORK }),
+        reply("mcp.list", {
+          location: { directory: WORK },
+          data: [{ name: server, status: { status: "failed", error: "unavailable" } }],
+        }),
+        out("mcp.remove", { server, "location[directory]": WORK }),
+        reply("mcp.remove", null),
+      ]);
+      assert.equal(
+        (yield* Effect.result(
+          runtime.startTurn({
+            ...turnInput(thread),
+            runtimePolicy: { ...policy(), instructions: "ROLE-TEST", garrs: true },
+          }),
+        ))._tag,
+        "Failure",
+      );
+      yield* runtime.unloadThread!({ providerThread: thread });
     }).pipe(Effect.scoped),
   );
 

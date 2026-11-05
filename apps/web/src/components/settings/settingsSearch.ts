@@ -29,6 +29,7 @@ export type SettingsPath =
   | "/settings/browser"
   | "/settings/devices"
   | "/settings/scheduled-tasks"
+  | "/settings/garrs"
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
@@ -99,6 +100,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/browser": "Browser",
   "/settings/devices": "Devices",
   "/settings/scheduled-tasks": "Scheduled tasks",
+  "/settings/garrs": "Garrs",
   "/settings/source-control": "Source control",
   "/settings/worktrees": "Worktrees",
   "/settings/connections": "Environments",
@@ -134,6 +136,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/browser",
       "/settings/devices",
       "/settings/scheduled-tasks",
+      "/settings/garrs",
     ],
   },
   {
@@ -1180,6 +1183,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretsFeatureOnly: true,
   },
   {
+    id: "garrs-team",
+    title: "Garrs agent team",
+    to: "/settings/garrs",
+    searchTerms: [
+      "garras team agents multi-agent models preferences selection accounts quota fallback limits review autonomy",
+    ],
+  },
+  {
+    id: "garrs-usage",
+    title: "Garrs usage",
+    to: "/settings/garrs",
+    searchTerms: ["tokens attempts csv export cost"],
+  },
+  {
     id: "archive",
     title: "Archived threads",
     to: "/settings/archived",
@@ -1210,6 +1227,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/access": "connections",
   "/settings/secrets": null,
   "/settings/scheduled-tasks": null,
+  "/settings/garrs": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,

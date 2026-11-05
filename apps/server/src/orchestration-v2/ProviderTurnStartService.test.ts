@@ -43,6 +43,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -80,6 +81,7 @@ function startWithMissingWorktree(
     [managedWorktreesDir]: managedWorktreesDir,
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
+  isGarrs = false,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -135,6 +137,9 @@ function startWithMissingWorktree(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
+        Layer.mock(GarrsStore.GarrsStore)({
+          getThread: () => Effect.succeed(isGarrs ? ({} as never) : null),
+        }),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
         Layer.succeed(FileSystem.FileSystem, {
@@ -200,7 +205,7 @@ function startWithMissingWorktree(
   const start = Effect.gen(function* () {
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId })
-      .pipe(Effect.flip);
+      .pipe(Effect.exit);
   }).pipe(Effect.provide(layer), Effect.runPromise);
   return {
     start,
@@ -265,6 +270,20 @@ it.each([
   const harness = startWithMissingWorktree(input.worktreePath, input.realPaths);
   await harness.start;
   expect(harness.createWorktree).toHaveBeenCalledTimes(input.recreated ? 1 : 0);
+});
+
+it("does not recreate a missing Garrs worktree outside the guarded preparation path", async () => {
+  const harness = startWithMissingWorktree(
+    `${managedWorktreesDir}/project/feature-restore`,
+    undefined,
+    true,
+  );
+  await harness.start;
+  expect(harness.pruneWorktrees).not.toHaveBeenCalled();
+  expect(harness.createWorktree).not.toHaveBeenCalled();
+  expect(JSON.stringify(harness.writeIfRunCurrent.mock.calls)).toContain(
+    "Garrs cannot recreate a missing checkout automatically",
+  );
 });
 
 function makeLocalCommandHarness(input: {

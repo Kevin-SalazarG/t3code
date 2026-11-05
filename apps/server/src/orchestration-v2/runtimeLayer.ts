@@ -49,6 +49,8 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as GarrsStore from "../garrs/GarrsStore.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
@@ -64,6 +66,7 @@ export const layerEventInfrastructure = Layer.mergeAll(
 
 const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(ProjectStore.layer),
+  Layer.provide(GarrsStore.layer),
 );
 
 const layerEventStoreProvided = EventStore.layerFromOrchestrationEventStore.pipe(
@@ -172,6 +175,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerProviderAuthServiceProvided,
       layerRunExecutionServiceProvided,
       layerRuntimePolicyProvided,
+      GarrsStore.layer,
     ),
   ),
 );
@@ -268,6 +272,8 @@ const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      GarrsStore.layer,
+      VcsProcess.layer,
       layerProjectService,
       layerProjectSetupScriptRunner,
       layerManagedProjectFoldersProvided,
