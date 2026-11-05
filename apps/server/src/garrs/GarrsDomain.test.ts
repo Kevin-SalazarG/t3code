@@ -2153,6 +2153,43 @@ describe("messages and controls", () => {
     expect(scheduled.effects.some((effect) => effect.kind === "launch_attempt")).toBe(!awaiting);
   });
 
+  it("replans from completed results without duplicating them or launching superseded work", () => {
+    const doneSpec = spec({ key: "contract" });
+    const initial = running(
+      step(aggregateOf([doneSpec, spec({ key: "backend", dependsOn: ["contract"] })])).aggregate,
+    );
+    const completed = report(initial, "contract");
+    const revised = Decider.revise(completed, {
+      feedback: "Continue the remaining implementation",
+      access: undefined,
+      newTaskId: () => GarrsTaskId.make("replan"),
+      now: NOW,
+    }).aggregate;
+    const planning = running(step(revised).aggregate);
+    expect(taskByKey(planning, "backend").status).toBe("cancelled");
+    const planner = attemptFor(planning, "plan-r2");
+    const decision = Decider.submitPlan(planning, {
+      attemptId: planner.id,
+      plan: {
+        summary: "Continue",
+        risks: [],
+        tasks: [doneSpec, spec({ key: "backend", dependsOn: ["contract"] })],
+      },
+      planId: GarrsPlanRevisionId.make("continuation"),
+      newTaskId: () => GarrsTaskId.make("continued-backend"),
+      autonomy: "auto",
+      now: NOW,
+    });
+    expect(decision.aggregate.tasks.filter((task) => task.key === "contract")).toEqual([
+      taskByKey(completed, "contract"),
+    ]);
+    expect(decision.aggregate.artifacts).toEqual(completed.artifacts);
+    const scheduled = step(decision.aggregate);
+    expect(scheduled.aggregate.tasks.find((task) => task.id === "continued-backend")?.status).toBe(
+      "running",
+    );
+  });
+
   it("approves only the exact plan revision the user saw", () => {
     const planned = (aggregate: WorkAggregate, planId: string) => {
       const live = running(step(aggregate).aggregate);

@@ -98,7 +98,30 @@ export function submitPlan(
   ) {
     reject("forbidden", "Only Asta's planning task can submit a plan.");
   }
-  const errors = validatePlan(input.plan.tasks, {
+  const completed = new Map(
+    aggregate.tasks
+      .filter((entry) => entry.status === "completed")
+      .map((entry) => [entry.key, entry]),
+  );
+  for (const spec of input.plan.tasks) {
+    const previous = completed.get(spec.key);
+    if (previous === undefined) continue;
+    if (
+      (spec.projectId ?? aggregate.workItem.projectId) !== previous.projectId ||
+      (["agentId", "capability", "objective", "deliverables", "acceptanceCriteria"] as const).some(
+        (key) => JSON.stringify(spec[key]) !== JSON.stringify(previous[key]),
+      )
+    ) {
+      reject(
+        "invalid",
+        `Completed task "${spec.key}" is immutable. Depend on its existing result or use a new key for changed work.`,
+      );
+    }
+  }
+  if (new Set(input.plan.tasks.map((spec) => spec.key)).size !== input.plan.tasks.length)
+    reject("invalid", "Plan contains duplicate task keys.");
+  const pendingTasks = input.plan.tasks.filter((spec) => !completed.has(spec.key));
+  const errors = validatePlan(pendingTasks, {
     projectId: aggregate.workItem.projectId,
     additionalProjectIds:
       aggregate.workItem.projectContexts?.map((context) => context.projectId) ?? [],
@@ -122,7 +145,7 @@ export function submitPlan(
   if (errors.length > 0) reject("invalid", `Plan rejected:\n- ${errors.join("\n- ")}`);
 
   const revision = Math.max(0, ...aggregate.plans.map((plan) => plan.revision)) + 1;
-  const awaiting = planRequiresApproval(input.autonomy, input.plan.tasks);
+  const awaiting = planRequiresApproval(input.autonomy, pendingTasks);
   const plan: GarrsPlanRevision = {
     id: input.planId,
     workItemId: aggregate.workItem.id,
@@ -130,7 +153,7 @@ export function submitPlan(
     authorAttemptId: attempt.id,
     summary: input.plan.summary,
     risks: input.plan.risks,
-    tasks: input.plan.tasks,
+    tasks: pendingTasks,
     status: awaiting ? "awaiting_approval" : "active",
     createdAt: input.now,
   };
@@ -146,7 +169,7 @@ export function submitPlan(
           updatedAt: input.now,
         },
   );
-  const newTasks = input.plan.tasks.map((spec) =>
+  const newTasks = pendingTasks.map((spec) =>
     taskFromSpec({
       id: input.newTaskId(),
       workItem: aggregate.workItem,
@@ -1007,7 +1030,7 @@ export function revise(
       },
       tasks: [
         ...aggregate.tasks.map((task) =>
-          input.invalidatePrevious && task.status !== "cancelled"
+          (input.invalidatePrevious || !isTaskTerminal(task)) && task.status !== "cancelled"
             ? {
                 ...task,
                 status: "cancelled" as const,
