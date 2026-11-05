@@ -37,8 +37,9 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 `cases/garrs.ndjson` covers read-only diagnosis, delegation, delivery with evidence,
 bounded temporary helpers and work involving multiple projects. It also checks
 that unavailable project context blocks cross-project writes without claiming completion.
-Authorized blocker recovery also checks that Garras replans within the existing scope
-and budget without requesting the same permission again.
+Authorized blocker recovery checks that Garras resumes the existing plan and completed
+results within its original scope and budget, without another planning cycle or permission
+request. Pending-stop recovery records continuation once and then waits for the server.
 `setup.garrsRole: "garras"` uses the coordinator text from `GarrsInstructions.ts`;
 `"botas"` and `"kex"` use the real member instructions for synthetic read-only tasks. All
 use the default team configuration, and the

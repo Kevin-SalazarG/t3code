@@ -101,13 +101,23 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
                   threadId,
                   projectId,
                   agentId: "copito" as const,
-                  attemptId: null,
+                  attemptId: GarrsAttemptId.make("read-attempt"),
                   readOnly: true,
                   instructions: "Review independently.",
                   configRevision: 0,
                 }
               : null,
           ),
+        findAttemptById: () =>
+          Effect.succeed({ id: "read-attempt", workItemId: "read-work" } as never),
+        loadAggregate: () =>
+          Effect.succeed({
+            workItem: { status: "active", projectContexts: [] },
+            tasks: [{ id: "read-task", status: "running", generation: 0 }],
+            attempts: [
+              { id: "read-attempt", taskId: "read-task", status: "running", generation: 0 },
+            ],
+          } as unknown as WorkAggregate),
       }),
     ),
     Layer.provide(
@@ -201,7 +211,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         thread: { ...makeThread({ now, worktreePath: null }), id: garrsMemberThreadId },
         modelSelection,
       });
-      assert.equal(member.instructions, "Review independently.");
+      assert.include(member.instructions!, "Review independently.");
       assert.deepEqual(member.sandboxPolicy, { type: "readOnly" });
     }),
   );
@@ -302,11 +312,21 @@ it.effect("restricts Garrs writers to an isolated checkout with Codex's filesyst
               threadId: writerId,
               projectId,
               agentId: "botas",
-              attemptId: null,
+              attemptId: GarrsAttemptId.make("writer-attempt"),
               readOnly: false,
               instructions: "Write only here.",
               configRevision: 0,
             }),
+          findAttemptById: () =>
+            Effect.succeed({ id: "writer-attempt", workItemId: "writer-work" } as never),
+          loadAggregate: () =>
+            Effect.succeed({
+              workItem: { status: "active" },
+              tasks: [{ id: "writer-task", status: "running", generation: 0 }],
+              attempts: [
+                { id: "writer-attempt", taskId: "writer-task", status: "running", generation: 0 },
+              ],
+            } as unknown as WorkAggregate),
         }),
       ),
       Layer.provide(
@@ -419,6 +439,7 @@ it.effect("grants Copito only validated project roots and rejects a substituted 
     let aggregate = {
       workItem: {
         projectId,
+        status: "active",
         access: "read_only",
         projectRoot: firstCanonical,
         repositoryIdentity: path.join(firstCanonical, ".git"),
@@ -430,6 +451,8 @@ it.effect("grants Copito only validated project roots and rejects a substituted 
           },
         ],
       },
+      tasks: [{ id: "review-task", status: "running", generation: 0 }],
+      attempts: [{ id: attemptId, taskId: "review-task", status: "running", generation: 0 }],
     } as unknown as WorkAggregate;
     const policyLayer = RuntimePolicy.layerFromProjectStore.pipe(
       Layer.provide(ServerSettings.layerTest({})),
@@ -445,7 +468,7 @@ it.effect("grants Copito only validated project roots and rejects a substituted 
               instructions: "Review",
               configRevision: 0,
             }),
-          findAttemptById: () => Effect.succeed({ workItemId } as never),
+          findAttemptById: () => Effect.succeed({ id: attemptId, workItemId } as never),
           loadAggregate: () => Effect.succeed(aggregate),
         }),
       ),
@@ -509,7 +532,9 @@ it.effect("grants Copito only validated project roots and rejects a substituted 
       args: ["rev-parse", "HEAD"],
     })).stdout.trim();
     aggregate = {
+      ...aggregate,
       workItem: {
+        ...aggregate.workItem,
         projectId,
         access: "write",
         projectRoot: firstCanonical,

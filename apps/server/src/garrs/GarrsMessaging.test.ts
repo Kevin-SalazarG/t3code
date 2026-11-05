@@ -129,7 +129,7 @@ function work(): WorkAggregate {
   };
 }
 
-it.effect.each(["stop_attempt", "cancel", "lookup_unavailable"] as const)(
+it.effect.each(["stop_attempt", "cancel", "lookup_unavailable", "ended_thread"] as const)(
   "settles %s before a queued attempt creates its provider thread",
   (action) =>
     Effect.gen(function* () {
@@ -137,15 +137,18 @@ it.effect.each(["stop_attempt", "cancel", "lookup_unavailable"] as const)(
       let lookupUnavailable = action === "lookup_unavailable";
       const deps = Layer.mergeAll(
         Layer.succeed(ThreadManagement.ThreadManagementService, {
+          dispatch: () => Effect.void,
           getThreadProjection: (threadId: ThreadId) =>
-            Effect.fail(
-              new Orchestrator.OrchestratorProjectionError({
-                threadId,
-                cause: lookupUnavailable
-                  ? new Error("Lookup temporarily unavailable")
-                  : new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
-              }),
-            ),
+            action === "ended_thread"
+              ? Effect.succeed({ runs: [], messages: [], providerTurns: [], visibleTurnItems: [] })
+              : Effect.fail(
+                  new Orchestrator.OrchestratorProjectionError({
+                    threadId,
+                    cause: lookupUnavailable
+                      ? new Error("Lookup temporarily unavailable")
+                      : new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
+                  }),
+                ),
         } as unknown as ThreadManagement.ThreadManagementService["Service"]),
         Layer.succeed(ThreadLaunchService.ThreadLaunchService, {
           launch: () =>
@@ -175,8 +178,8 @@ it.effect.each(["stop_attempt", "cancel", "lookup_unavailable"] as const)(
             workItem: { ...initial.workItem, projectContexts: [] },
             attempts: initial.attempts.map((attempt) => ({
               ...attempt,
-              status: "launching" as const,
-              threadId: null,
+              status: action === "ended_thread" ? ("running" as const) : ("launching" as const),
+              threadId: action === "ended_thread" ? recipient : null,
             })),
           };
           const attemptId = aggregate.attempts[0]!.id;

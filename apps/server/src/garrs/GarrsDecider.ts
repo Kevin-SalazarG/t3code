@@ -35,6 +35,7 @@ import {
   canTransitionTask,
   currentAttempt,
   isAttemptActive,
+  hasVerifiedCriteria,
   isReviewTask,
   isTaskTerminal,
   isWorkTerminal,
@@ -287,6 +288,9 @@ export function report(
       summary: input.report.summary,
       body: input.report.body,
       evidence: input.report.evidence,
+      ...(input.report.verification === undefined
+        ? {}
+        : { verification: input.report.verification }),
       contentHash: input.contentHash,
       workspace: input.workspace,
       createdAt: input.now,
@@ -342,7 +346,7 @@ export function report(
     });
     effects.push({
       kind: "notify_garras",
-      text: `${task.agentId} reported a blocker on "${task.title}": ${input.report.summary}\nInspect persisted attempt failures and current model eligibility. Recover or replan with garrs action revise within the user's existing authorization, configured approvals and attempt, token and time limits. Ask the user only when a real missing decision, new permission or exhausted budget prevents continuing; do not request authorization already granted or override limits.`,
+      text: `${task.agentId} reported a blocker on "${task.title}": ${input.report.summary}\nInspect the blocker and current model eligibility. Resolve operational dependencies before retrying, then use garrs action resume to continue the existing plan within the user's authorization, approvals and attempt, token and time limits. Use revise only when requirements or dependencies require a changed plan. Ask the user only when a real missing decision, new permission or exhausted budget prevents continuing; do not request authorization already granted or override limits.`,
     });
   }
   return { aggregate: next, activity, effects };
@@ -376,9 +380,14 @@ export function submitReview(
   const blocking = input.review.findings.filter(
     (finding) => finding.severity === "blocker" || finding.severity === "major",
   );
-  const failed = input.review.criteria.some((criterion) => criterion.status === "failed");
-  if (input.review.verdict === "approved" && (blocking.length > 0 || failed)) {
-    reject("invalid", "An approval cannot carry blocker or major findings or failed criteria.");
+  if (
+    input.review.verdict === "approved" &&
+    (blocking.length > 0 || !hasVerifiedCriteria(input.review.criteria))
+  ) {
+    reject(
+      "invalid",
+      "Approval requires verified criteria and cannot carry blocker or major findings, failed criteria or unverifiable criteria. Report a blocked review until verification is possible.",
+    );
   }
   const projects = new Set([
     aggregate.workItem.projectId,
@@ -775,22 +784,57 @@ export function control(
       if (isWorkTerminal(workItem)) reject("conflict", `Work item is ${workItem.status}.`);
       const running = activeAttempts.length;
       return done(
-        withStatus("paused", "Paused by the user."),
+        {
+          ...aggregate,
+          workItem: {
+            ...workItem,
+            status: "paused",
+            statusReason: "Paused by the user.",
+            resumeRequested: false,
+            updatedAt: now,
+          },
+        },
         running === 0
           ? "Paused. No attempt was running; no new assignments start."
           : `Paused new assignments. ${running} running attempt(s) continue; stop them individually or cancel the work.`,
       );
     }
     case "resume": {
-      if (workItem.status !== "paused" && workItem.status !== "blocked") {
-        reject("conflict", `Only paused or blocked work resumes; this is ${workItem.status}.`);
+      if (["delivered", "accepted", "awaiting_approval"].includes(workItem.status)) {
+        reject(
+          "conflict",
+          `Work in ${workItem.status} cannot resume; review its plan or request a revision.`,
+        );
       }
-      return done(withStatus("active", null), "Resumed. Ready tasks start within the team limits.");
+      const stopping = aggregate.attempts.some((attempt) => attempt.status === "cancel_requested");
+      const message = stopping
+        ? "Continuation requested. It resumes automatically after the pending stops are confirmed."
+        : "Continuing the existing plan and completed results within the team limits.";
+      return done(
+        {
+          ...aggregate,
+          workItem: {
+            ...workItem,
+            status: "active",
+            statusReason: stopping ? message : null,
+            resumeRequested: true,
+            updatedAt: now,
+          },
+        },
+        message,
+      );
     }
     case "cancel": {
       if (isWorkTerminal(workItem)) reject("conflict", `Work item is already ${workItem.status}.`);
       const next: WorkAggregate = {
-        ...withStatus("cancelled", action.reason ?? "Cancelled by the user."),
+        ...aggregate,
+        workItem: {
+          ...workItem,
+          status: "cancelled",
+          statusReason: action.reason ?? "Cancelled by the user.",
+          resumeRequested: false,
+          updatedAt: now,
+        },
         tasks: aggregate.tasks.map((task) =>
           isTaskTerminal(task)
             ? task
@@ -885,6 +929,7 @@ export function control(
         status: "pending",
         statusReason: "Retry requested by the user.",
         generation: task!.generation + 1,
+        attemptLimitGeneration: task!.generation + 1,
         updatedAt: now,
       });
       return done(
@@ -1024,6 +1069,7 @@ export function revise(
         access: input.access ?? workItem.access,
         status: "planning",
         statusReason: null,
+        resumeRequested: false,
         deliveredAt: null,
         acceptedAt: null,
         updatedAt: input.now,
@@ -1042,13 +1088,11 @@ export function revise(
         ),
         planTask,
       ],
-      plans: input.invalidatePrevious
-        ? aggregate.plans.map((plan) =>
-            plan.status === "active" || plan.status === "awaiting_approval"
-              ? { ...plan, status: "superseded" as const }
-              : plan,
-          )
-        : aggregate.plans,
+      plans: aggregate.plans.map((plan) =>
+        plan.status === "active" || plan.status === "awaiting_approval"
+          ? { ...plan, status: "superseded" as const }
+          : plan,
+      ),
       reviews: input.invalidatePrevious
         ? aggregate.reviews.map((review) =>
             review.status === "valid"

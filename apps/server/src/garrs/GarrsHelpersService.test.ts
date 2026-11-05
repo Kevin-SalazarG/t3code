@@ -200,7 +200,17 @@ it.effect.each(["botas", "asta", "copito"] as const)(
           if (agentId === "copito") {
             yield* service.submitReview(
               { threadId: owner.threadId! },
-              { verdict: "approved", criteria: [], findings: [] },
+              {
+                verdict: "approved",
+                criteria: [
+                  {
+                    criterion: "Task requirements",
+                    status: "verified",
+                    evidence: "Checked the integrated result",
+                  },
+                ],
+                findings: [],
+              },
             );
             const reviewed = (yield* store.loadAggregate(workItemId))!;
             expect(reviewed.reviews[0]?.status).toBe("valid");

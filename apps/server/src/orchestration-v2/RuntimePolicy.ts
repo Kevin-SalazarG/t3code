@@ -17,6 +17,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as GarrsStore from "../garrs/GarrsStore.ts";
+import * as GarrsPreparation from "../garrs/GarrsPreparation.ts";
+import { runtimeContext } from "../garrs/GarrsRuntimeContext.ts";
 import * as GarrsSubject from "../garrs/GarrsSubject.ts";
 import * as GarrsCheckout from "../garrs/GarrsCheckout.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -400,13 +402,38 @@ export const layerFromProjectStore: Layer.Layer<
               garrsProtectedRoots = [original.value];
           }
         }
+        const preparation =
+          member === null ||
+          member.agentId === "garras" ||
+          Option.isNone(fileSystem) ||
+          Option.isNone(paths)
+            ? []
+            : yield* GarrsPreparation.inspect(member.projectId, cwd).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+                Effect.provideService(Path.Path, paths.value),
+              );
+        const instructions =
+          member === null || Option.isNone(garrs)
+            ? undefined
+            : yield* runtimeContext(member, preparation).pipe(
+                Effect.provideService(GarrsStore.GarrsStore, garrs.value),
+                Effect.mapError(
+                  (cause) =>
+                    new RuntimePolicyResolveError({
+                      projectId: input.thread.projectId,
+                      providerInstanceId: input.modelSelection.instanceId,
+                      reason: cause.message,
+                      cause,
+                    }),
+                ),
+              );
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
           // Garrs members get their role brief, and read-only roles the adapter's sandbox.
-          ...(member === null ? {} : { instructions: member.instructions }),
+          ...(instructions === undefined ? {} : { instructions }),
           ...(member === null ? {} : { garrs: true }),
           ...(garrsReadRoots.length === 0 ? {} : { garrsReadRoots }),
           ...(garrsWriteDenyRoots.length === 0 ? {} : { garrsWriteDenyRoots }),

@@ -1,3 +1,4 @@
+import { applyRunEnded, applyRunStarted } from "./GarrsAttempts.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   type GarrsAttempt,
@@ -14,6 +15,7 @@ import {
   type ModelSelection,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -25,7 +27,6 @@ import {
   type ScheduleContext,
   KEX_WAITING_FOR_REVIEW,
   type WorkAggregate,
-  applyRunEnded,
   defaultTeamConfig,
   deliveryBlockers,
   planTaskSpec,
@@ -812,7 +813,17 @@ describe("reconcile", () => {
       expect(() => report(ready, "copito-formal-review")).toThrow("submit_review");
       const reviewed = Decider.submitReview(ready, {
         attemptId: attempt.id,
-        review: { verdict: "approved", criteria: [], findings: [] },
+        review: {
+          verdict: "approved",
+          criteria: [
+            {
+              criterion: "Task requirements",
+              status: "verified",
+              evidence: "Checked the integrated result",
+            },
+          ],
+          findings: [],
+        },
         reviewId: GarrsReviewId.make("formal"),
         currentSubjectHash: "subject-1",
         newTaskId: () => GarrsTaskId.make("unused"),
@@ -839,7 +850,17 @@ describe("reconcile", () => {
     expect(scheduled.reviews).toHaveLength(0);
     const approved = Decider.submitReview(scheduled, {
       attemptId: review!.id,
-      review: { verdict: "approved", criteria: [], findings: [] },
+      review: {
+        verdict: "approved",
+        criteria: [
+          {
+            criterion: "Task requirements",
+            status: "verified",
+            evidence: "Checked the integrated result",
+          },
+        ],
+        findings: [],
+      },
       reviewId: GarrsReviewId.make("formal-review"),
       currentSubjectHash: "subject-1",
       newTaskId: () => GarrsTaskId.make("unused"),
@@ -1289,42 +1310,62 @@ describe("reconcile", () => {
     expect(result.workItem.correctionCycles).toBe(1);
   });
 
-  it("rejects an approval that carries a major finding", () => {
-    const written = running(
-      step(
-        report(
-          running(step(aggregateOf([spec({ key: "api", capability: "write" })])).aggregate),
-          "api",
-          "d",
-        ),
-      ).aggregate,
-    );
-    const review = written.tasks.find((task) => task.agentId === "copito")!;
-    expect(() =>
-      Decider.submitReview(written, {
-        attemptId: written.attempts.find((attempt) => attempt.taskId === review.id)!.id,
-        review: {
-          verdict: "approved",
-          criteria: [{ criterion: "Works", status: "verified", evidence: "ok" }],
-          findings: [
-            {
-              description: "x",
-              impact: "x",
-              location: "x",
-              severity: "major",
-              suggestedOwner: "botas",
-              resolutionCondition: "x",
-            },
-          ],
-        },
-        reviewId: GarrsReviewId.make("r1"),
-        currentSubjectHash: "subject-1",
-        newTaskId: () => GarrsTaskId.make("unused"),
-        maxCorrectionCycles: 3,
-        now: NOW,
-      }),
-    ).toThrow(GarrsRejection);
-  });
+  it.each(["major-finding", "unverifiable", "empty", "not_applicable"])(
+    "rejects an approval that carries %s",
+    (scenario) => {
+      const written = running(
+        step(
+          report(
+            running(step(aggregateOf([spec({ key: "api", capability: "write" })])).aggregate),
+            "api",
+            "d",
+          ),
+        ).aggregate,
+      );
+      const review = written.tasks.find((task) => task.agentId === "copito")!;
+      expect(() =>
+        Decider.submitReview(written, {
+          attemptId: written.attempts.find((attempt) => attempt.taskId === review.id)!.id,
+          review: {
+            verdict: "approved",
+            criteria:
+              scenario === "empty"
+                ? []
+                : [
+                    {
+                      criterion: "Works",
+                      status:
+                        scenario === "unverifiable"
+                          ? "unverifiable"
+                          : scenario === "not_applicable"
+                            ? "not_applicable"
+                            : "verified",
+                      evidence: "ok",
+                    },
+                  ],
+            findings:
+              scenario !== "major-finding"
+                ? []
+                : [
+                    {
+                      description: "x",
+                      impact: "x",
+                      location: "x",
+                      severity: "major",
+                      suggestedOwner: "botas",
+                      resolutionCondition: "x",
+                    },
+                  ],
+          },
+          reviewId: GarrsReviewId.make("r1"),
+          currentSubjectHash: "subject-1",
+          newTaskId: () => GarrsTaskId.make("unused"),
+          maxCorrectionCycles: 3,
+          now: NOW,
+        }),
+      ).toThrow(GarrsRejection);
+    },
+  );
 
   it("routes review corrections to each finding's verified project", () => {
     const other = ProjectId.make("p2");
@@ -1566,7 +1607,17 @@ describe("temporary helpers", () => {
       expect(() =>
         Decider.submitReview(forged, {
           attemptId: attempt.id,
-          review: { verdict: "approved", criteria: [], findings: [] },
+          review: {
+            verdict: "approved",
+            criteria: [
+              {
+                criterion: "Task requirements",
+                status: "verified",
+                evidence: "Checked the integrated result",
+              },
+            ],
+            findings: [],
+          },
           reviewId: GarrsReviewId.make("forged"),
           currentSubjectHash: "subject-1",
           newTaskId: () => GarrsTaskId.make("new"),
@@ -1755,6 +1806,73 @@ describe("attempt outcomes", () => {
     },
   );
 
+  it.each(["completed", "failed", "interrupted"])(
+    "settles a waiting task when its direct turn ends as %s",
+    (runStatus) => {
+      const initial = launched();
+      const waiting = {
+        ...initial,
+        tasks: initial.tasks.map((task) => ({ ...task, status: "waiting_response" as const })),
+      };
+      const started = applyRunStarted(waiting, {
+        attemptId: waiting.attempts[0]!.id,
+        runId: RunId.make("direct-run"),
+        humanResponse: true,
+        now: NOW,
+      });
+      expect(started.aggregate.tasks[0]?.status).toBe("running");
+      expect(started.aggregate.attempts[0]?.runId).toBe("direct-run");
+      expect(
+        applyRunStarted(started.aggregate, {
+          attemptId: waiting.attempts[0]!.id,
+          runId: RunId.make("direct-run"),
+          humanResponse: true,
+          now: NOW,
+        }).activity,
+      ).toEqual([]);
+      const ended = applyRunEnded(waiting, {
+        attemptId: waiting.attempts[0]!.id,
+        runStatus,
+        now: NOW,
+        remindersSent: 0,
+        usage: unknownUsage(),
+        effectiveModel: null,
+      });
+      expect(ended.aggregate.tasks[0]?.status).toBe(
+        runStatus === "completed" ? "waiting_response" : "ready",
+      );
+      expect(ended.aggregate.attempts[0]?.status).toBe(
+        runStatus === "completed" ? "running" : runStatus,
+      );
+    },
+  );
+
+  it.each(["helper", "kex"] as const)(
+    "preserves the %s wait during a direct member turn",
+    (reason) => {
+      const initial = launched();
+      const waiting = {
+        ...initial,
+        tasks: initial.tasks.map((task) => ({
+          ...task,
+          status: "waiting_response" as const,
+          agentId: reason === "kex" ? ("kex" as const) : task.agentId,
+          statusReason:
+            reason === "helper"
+              ? "Waiting for temporary helper helper-1."
+              : "Waiting for commit approval.",
+        })),
+      };
+      const observed = applyRunStarted(waiting, {
+        attemptId: waiting.attempts[0]!.id,
+        runId: RunId.make("direct-wait-run"),
+        humanResponse: true,
+        now: NOW,
+      });
+      expect(observed.aggregate.tasks[0]?.status).toBe("waiting_response");
+    },
+  );
+
   it("refuses a report from a superseded attempt", () => {
     const start = launched();
     const failed = applyRunEnded(start, {
@@ -1875,6 +1993,9 @@ describe("attempt outcomes", () => {
       statusReason: "Attempt limit reached.",
     });
     expect(aggregate.attempts).toHaveLength(config.limits.maxAttemptsPerTask);
+    const resumed = step(Decider.control(aggregate, { type: "resume" }, NOW).aggregate);
+    expect(resumed.aggregate.attempts).toHaveLength(config.limits.maxAttemptsPerTask);
+    expect(resumed.aggregate.tasks[0]?.statusReason).toBe("Attempt limit reached.");
   });
 });
 
@@ -2103,6 +2224,55 @@ describe("messages and controls", () => {
     const cancelled = Decider.control(start, { type: "cancel" }, NOW);
     expect(cancelled.aggregate.attempts[0]!.status).toBe("cancel_requested");
     expect(cancelled.effects).toMatchObject([{ kind: "stop_attempt" }]);
+    const requested = Decider.control(cancelled.aggregate, { type: "resume" }, NOW);
+    const paused = Decider.control(requested.aggregate, { type: "pause" }, NOW);
+    expect(step(paused.aggregate).aggregate.workItem).toMatchObject({
+      status: "paused",
+      resumeRequested: false,
+    });
+    const waiting = step(requested.aggregate);
+    expect(waiting.effects.filter((effect) => effect.kind === "launch_attempt")).toEqual([]);
+    const ended = applyRunEnded(waiting.aggregate, {
+      attemptId: start.attempts[0]!.id,
+      runStatus: "interrupted",
+      now: NOW,
+      remindersSent: 0,
+      usage: unknownUsage(),
+      effectiveModel: null,
+    });
+    const resumed = step(ended.aggregate);
+    expect(resumed.aggregate.plans).toEqual(start.plans);
+    expect(resumed.aggregate.tasks).toHaveLength(1);
+    expect(resumed.aggregate.tasks[0]?.status).toBe("running");
+    expect(resumed.aggregate.attempts).toHaveLength(2);
+    expect(resumed.aggregate.workItem.resumeRequested).toBe(false);
+    const failedAgain = applyRunEnded(resumed.aggregate, {
+      attemptId: resumed.aggregate.attempts.at(-1)!.id,
+      runStatus: "failed",
+      now: NOW,
+      remindersSent: 0,
+      usage: unknownUsage(),
+      effectiveModel: null,
+    });
+    const atLimit = step(failedAgain.aggregate);
+    expect(atLimit.aggregate.attempts).toHaveLength(2);
+    expect(atLimit.aggregate.tasks[0]?.statusReason).toBe("Attempt limit reached.");
+    const explicitRetry = step(
+      Decider.control(
+        atLimit.aggregate,
+        { type: "retry_task", taskId: atLimit.aggregate.tasks[0]!.id },
+        NOW,
+      ).aggregate,
+    );
+    expect(explicitRetry.aggregate.attempts).toHaveLength(3);
+    const exhausted = step(ended.aggregate, {
+      limits: { ...config.limits, maxAttemptsPerTask: 1 },
+    });
+    expect(exhausted.aggregate.attempts).toHaveLength(1);
+    expect(exhausted.aggregate.tasks[0]).toMatchObject({
+      status: "failed",
+      statusReason: "Attempt limit reached.",
+    });
   });
 
   it.each([
@@ -2221,6 +2391,10 @@ describe("messages and controls", () => {
     }).aggregate;
     const second = planned(revised, "plan-b");
     expect(second.plans.find((plan) => plan.id === "plan-a")!.status).toBe("superseded");
+    const stopped = Decider.control(second, { type: "cancel" }, NOW).aggregate;
+    const continued = step(Decider.control(stopped, { type: "resume" }, NOW).aggregate);
+    expect(continued.aggregate.workItem.status).toBe("awaiting_approval");
+    expect(continued.effects.some((effect) => effect.kind === "launch_attempt")).toBe(false);
 
     expect(() =>
       Decider.control(

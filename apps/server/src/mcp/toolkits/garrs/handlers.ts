@@ -11,6 +11,7 @@ import {
   GarrsSendMessageInput,
   GarrsStartWorkInput,
   GarrsStatusInput,
+  GarrsWorkItemInput,
   GarrsSubmitPlanInput,
   GarrsSubmitReviewInput,
   type GarrsToolResult,
@@ -73,6 +74,7 @@ const actions: Record<(typeof GARRS_TOOL_ACTIONS)[number], Run> = {
     garrs.selectTaskModel(caller, input),
   ),
   start_work: action(GarrsStartWorkInput, (garrs, caller, input) => garrs.startWork(caller, input)),
+  resume: action(GarrsWorkItemInput, (garrs, caller, input) => garrs.resume(caller, input)),
   revise: action(GarrsReviseInput, (garrs, caller, input) => garrs.revise(caller, input)),
   deliver: action(GarrsDeliverInput, (garrs, caller, input) => garrs.deliver(caller, input)),
   submit_plan: action(GarrsSubmitPlanInput, (garrs, caller, input) =>

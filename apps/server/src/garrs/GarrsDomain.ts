@@ -18,6 +18,7 @@ import type {
   GarrsProjectContext,
   GarrsProjectBinding,
   GarrsReview,
+  GarrsReviewCriterion,
   GarrsTask,
   GarrsTaskId,
   GarrsTaskSpec,
@@ -25,7 +26,6 @@ import type {
   GarrsTeamConfig,
   GarrsWorkItem,
   GarrsWorkItemStatus,
-  OrchestrationV2ProviderFailure,
   ProjectId,
 } from "@t3tools/contracts";
 import type { SelectionResult } from "./GarrsModels.ts";
@@ -256,19 +256,24 @@ const TASK_TRANSITIONS: Readonly<Record<GarrsTaskStatus, ReadonlyArray<GarrsTask
     "in_review",
     "needs_changes",
   ],
-  waiting_response: ["running", "cancelled", "failed"],
+  waiting_response: ["running", "cancelled", "failed", "ready"],
   in_review: ["completed", "needs_changes", "cancelled"],
   needs_changes: ["ready", "cancelled"],
   completed: [],
   failed: ["pending", "cancelled"],
-  cancelled: ["pending"],
+  cancelled: ["pending", "failed"],
 };
 
 export function canTransitionTask(from: GarrsTaskStatus, to: GarrsTaskStatus): boolean {
   return from === to || TASK_TRANSITIONS[from].includes(to);
 }
 
-function moveTask(task: GarrsTask, status: GarrsTaskStatus, reason: string | null, now: string) {
+export function moveTask(
+  task: GarrsTask,
+  status: GarrsTaskStatus,
+  reason: string | null,
+  now: string,
+) {
   if (!canTransitionTask(task.status, status)) {
     throw new GarrsRejection(
       "conflict",
@@ -523,6 +528,12 @@ const activePlan = (aggregate: WorkAggregate) =>
 export const isReviewTask = (task: GarrsTask) =>
   task.agentId === "copito" && task.helper === undefined;
 
+export const hasVerifiedCriteria = (criteria: ReadonlyArray<GarrsReviewCriterion>) =>
+  criteria.some((criterion) => criterion.status === "verified") &&
+  !criteria.some(
+    (criterion) => criterion.status === "failed" || criterion.status === "unverifiable",
+  );
+
 function validApprovedReview(
   aggregate: WorkAggregate,
   subjectHash: string | null,
@@ -531,6 +542,7 @@ function validApprovedReview(
     (review) =>
       review.status === "valid" &&
       review.verdict === "approved" &&
+      hasVerifiedCriteria(review.criteria) &&
       subjectHash !== null &&
       review.subjectHash === subjectHash,
   );
@@ -573,7 +585,10 @@ export function deliveryBlockers(
     if (task.status === "cancelled") continue;
     if (task.status === "failed")
       blockers.push(`Task "${task.title}" failed: ${task.statusReason ?? "no reason"}.`);
-    else if (task.status !== "completed") blockers.push(`Task "${task.title}" is ${task.status}.`);
+    else if (task.status !== "completed")
+      blockers.push(
+        `Task "${task.title}" is ${task.status}${task.statusReason === null ? "" : `: ${task.statusReason}`}.`,
+      );
   }
   const needsValidState =
     needsReview(aggregate, requireReviewForWrites, reviewDiagnoses) ||
@@ -600,10 +615,17 @@ export function invalidateStaleReviews(
 ): { readonly aggregate: WorkAggregate; readonly activity: ReadonlyArray<ActivityDraft> } {
   const activity: Array<ActivityDraft> = [];
   const reviews = aggregate.reviews.map((review) => {
-    if (review.status !== "valid" || review.subjectHash === subjectHash) return review;
+    if (review.status !== "valid") return review;
+    const reason =
+      review.subjectHash !== subjectHash
+        ? "Workspace or rules changed after this review."
+        : review.verdict === "approved" && !hasVerifiedCriteria(review.criteria)
+          ? "Required review criteria were not verified."
+          : null;
+    if (reason === null) return review;
     activity.push({
       type: "review.invalidated",
-      summary: "Files or rules changed after Copito's review; that review no longer applies.",
+      summary: `${reason} This review no longer counts toward delivery.`,
       agentId: "copito",
       taskId: review.taskId,
       attemptId: review.attemptId,
@@ -611,7 +633,7 @@ export function invalidateStaleReviews(
     return {
       ...review,
       status: "invalidated" as const,
-      invalidatedReason: "Workspace or rules changed after this review.",
+      invalidatedReason: reason,
     };
   });
   return activity.length === 0
@@ -635,6 +657,50 @@ export function reconcile(input: WorkAggregate, context: ScheduleContext): Decis
   const attempts = [...aggregate.attempts];
 
   if (isWorkTerminal(workItem)) return { aggregate, activity, effects };
+  if (workItem.resumeRequested) {
+    if (attempts.some((attempt) => attempt.status === "cancel_requested"))
+      return { aggregate, activity, effects };
+    const plan =
+      activePlan(aggregate) ?? aggregate.plans.find((plan) => plan.status === "awaiting_approval");
+    const planner = tasks.findLast(
+      (task) =>
+        task.agentId === "asta" && task.key.startsWith(PLAN_TASK_KEY) && task.helper === undefined,
+    );
+    tasks = tasks.map((task) =>
+      task.helper === undefined &&
+      (task.status === "failed" || task.status === "cancelled") &&
+      (plan === undefined ? task.id === planner?.id : task.planRevision === plan.revision)
+        ? attempts.filter(
+            (attempt) =>
+              attempt.taskId === task.id &&
+              attempt.generation >= (task.attemptLimitGeneration ?? 0),
+          ).length >= context.limits.maxAttemptsPerTask
+          ? moveTask(task, "failed", "Attempt limit reached.", now)
+          : moveTask(
+              task,
+              "pending",
+              "Continuing the existing task; prior changes and evidence are preserved.",
+              now,
+            )
+        : task,
+    );
+    const approval = aggregate.plans.some((plan) => plan.status === "awaiting_approval");
+    workItem = {
+      ...workItem,
+      resumeRequested: false,
+      status: approval ? "awaiting_approval" : "active",
+      statusReason: approval ? "The plan awaits the user's approval." : null,
+      updatedAt: now,
+    };
+    aggregate = { ...aggregate, workItem, tasks };
+    activity.push({
+      type: "work.resumed",
+      summary: "Continued the existing plan without repeating completed work.",
+      agentId: null,
+      taskId: null,
+      attemptId: null,
+    });
+  }
 
   // Dependency gates.
   const byKey = new Map(tasks.map((task) => [task.key, task] as const));
@@ -890,7 +956,8 @@ export function reconcile(input: WorkAggregate, context: ScheduleContext): Decis
       const writes = task.capability === "write";
       if (writes && busyCheckouts.has(checkoutKey(task))) return task;
       const generationAttempts = attempts.filter(
-        (attempt) => attempt.taskId === task.id && attempt.generation === task.generation,
+        (attempt) =>
+          attempt.taskId === task.id && attempt.generation >= (task.attemptLimitGeneration ?? 0),
       ).length;
       if (
         generationAttempts >= (task.helper === undefined ? context.limits.maxAttemptsPerTask : 1)
@@ -1068,162 +1135,6 @@ export function replaceAttempt(aggregate: WorkAggregate, attempt: GarrsAttempt):
   return {
     ...aggregate,
     attempts: aggregate.attempts.map((entry) => (entry.id === attempt.id ? attempt : entry)),
-  };
-}
-
-const SAFE_PROVIDER_FAILURES = new Set([
-  "Garrs cannot start with external or unverifiable MCP configuration. Disable external MCP servers for this session.",
-  "Garrs cannot start while an external MCP server is available to the thread.",
-  "Garrs requires the T3 MCP server.",
-  "Garrs could not verify the complete MCP server list.",
-  "Garrs could not verify its T3 MCP server.",
-  "Cannot verify the review's work item and project roots.",
-  "Cannot verify read-only access to all review projects.",
-  "Garrs writers require a verified isolated checkout.",
-  "Garrs cannot recreate a missing checkout automatically; inspect the worktree and start a new work item.",
-]);
-
-const safeProviderFailure = (message: string | undefined) => {
-  if (message === undefined) return null;
-  if (SAFE_PROVIDER_FAILURES.has(message)) return message;
-  for (const reason of [
-    "Garrs cannot prepare a worktree while checkout filters are configured.",
-    "Garrs cannot prepare a worktree containing submodules.",
-    "Cannot verify the project's checkout filters.",
-    "Cannot verify the project's checkout tree.",
-    "Cannot verify checkout filters and submodules.",
-  ]) {
-    if (message.endsWith(reason)) return reason;
-  }
-  if (
-    message.startsWith("Cannot verify review project ") ||
-    message.startsWith("Review project ")
-  ) {
-    return "A review project is unavailable or its repository could not be verified.";
-  }
-  return null;
-};
-
-/**
- * A provider run of an attempt ended. A late end for a superseded or cancelled
- * attempt changes nothing. A run that ended without a report gets one reminder;
- * a second silent end fails the attempt.
- */
-export function applyRunEnded(
-  aggregate: WorkAggregate,
-  input: {
-    readonly attemptId: GarrsAttemptId;
-    readonly runStatus: string;
-    readonly now: string;
-    readonly remindersSent: number;
-    readonly usage: GarrsAttempt["usage"];
-    readonly effectiveModel: string | null;
-    readonly effectiveModelSource?: "provider_response";
-    readonly failureMessage?: string;
-    readonly failure?: OrchestrationV2ProviderFailure;
-  },
-): Decision {
-  const attempt = aggregate.attempts.find((entry) => entry.id === input.attemptId);
-  if (attempt === undefined) return { aggregate, activity: [], effects: [] };
-  const withUsage = (entry: GarrsAttempt): GarrsAttempt => ({
-    ...entry,
-    ...(input.failure === undefined ? {} : { failure: input.failure }),
-    usage: input.usage,
-    decision:
-      input.effectiveModel === null
-        ? { ...entry.decision, effectiveModelSource: "unverifiable" }
-        : {
-            ...entry.decision,
-            effectiveModel: input.effectiveModel,
-            effectiveModelSource: input.effectiveModelSource ?? "provider_session",
-          },
-  });
-  const task = aggregate.tasks.find((entry) => entry.id === attempt.taskId);
-  if (attempt.status === "cancel_requested") {
-    const cancelled = withUsage({ ...attempt, status: "cancelled", endedAt: input.now });
-    let next = replaceAttempt(aggregate, cancelled);
-    if (
-      task !== undefined &&
-      (task.status === "running" || task.status === "waiting_response") &&
-      task.generation === attempt.generation
-    ) {
-      next = replaceTask(next, moveTask(task, "failed", "Stopped by the user.", input.now));
-    }
-    return {
-      aggregate: next,
-      activity: [
-        {
-          type: "attempt.cancelled",
-          summary: "Stop confirmed: the attempt's run ended.",
-          agentId: attempt.agentId,
-          taskId: attempt.taskId,
-          attemptId: attempt.id,
-        },
-      ],
-      effects: [],
-    };
-  }
-  if (!isAttemptActive(attempt) || task === undefined || task.generation !== attempt.generation) {
-    // Stale: record usage only; never reactivate or complete anything.
-    return {
-      aggregate: replaceAttempt(
-        aggregate,
-        withUsage({ ...attempt, endedAt: attempt.endedAt ?? input.now }),
-      ),
-      activity: [],
-      effects: [],
-    };
-  }
-  if (task.status === "waiting_response") {
-    return { aggregate: replaceAttempt(aggregate, withUsage(attempt)), activity: [], effects: [] };
-  }
-  if (input.runStatus === "completed" && input.remindersSent === 0) {
-    return {
-      aggregate: replaceAttempt(aggregate, withUsage(attempt)),
-      activity: [
-        {
-          type: "attempt.reminded",
-          summary: "Run ended without a report; asked once for it.",
-          agentId: attempt.agentId,
-          taskId: task.id,
-          attemptId: attempt.id,
-        },
-      ],
-      effects: [
-        {
-          kind: "resume_attempt",
-          attemptId: attempt.id,
-          text: "Your turn ended without a Garrs report. Call the Garrs reporting tool for your task now (garrs action report, garrs action submit_plan or garrs action submit_review) with what you actually did and found. Do not redo work.",
-        },
-      ],
-    };
-  }
-  const reason =
-    input.runStatus === "completed"
-      ? "The run ended twice without a structured report."
-      : input.failure?.class === "usage_limit"
-        ? `Provider reported a usage limit${input.failure.code === null ? "" : ` (${input.failure.code})`}; reset ${input.failure.resetAt ?? "unknown"}.`
-        : (safeProviderFailure(input.failureMessage) ??
-          `The provider run ended as ${input.runStatus}.`);
-  const failed = withUsage({
-    ...attempt,
-    status: input.runStatus === "interrupted" ? "interrupted" : "failed",
-    error: reason,
-    endedAt: input.now,
-  });
-  const retry = moveTask(task, "ready", `Retrying after: ${reason}`, input.now);
-  return {
-    aggregate: replaceTask(replaceAttempt(aggregate, failed), retry),
-    activity: [
-      {
-        type: "attempt.failed",
-        summary: reason,
-        agentId: attempt.agentId,
-        taskId: task.id,
-        attemptId: attempt.id,
-      },
-    ],
-    effects: [],
   };
 }
 

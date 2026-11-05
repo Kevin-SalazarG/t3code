@@ -669,7 +669,17 @@ it.effect(
           yield* fs.writeFileString(path.join(backend, "BACK.md"), "changed backend rule");
           const result = yield* service.submitReview(
             { threadId: copito.threadId! },
-            { verdict: "approved", criteria: [], findings: [] },
+            {
+              verdict: "approved",
+              criteria: [
+                {
+                  criterion: "Task requirements",
+                  status: "verified",
+                  evidence: "Checked the integrated result",
+                },
+              ],
+              findings: [],
+            },
           );
           expect(result.message).toContain("not counted");
           yield* service.drain;

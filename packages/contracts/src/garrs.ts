@@ -313,6 +313,7 @@ export const GarrsWorkItem = Schema.Struct({
   /** Increments with each round of user feedback. */
   revision: PositiveInt,
   correctionCycles: NonNegativeInt,
+  resumeRequested: Schema.optional(Schema.Boolean),
   rules: Schema.Array(GarrsRuleSnapshot),
   workspace: Schema.NullOr(GarrsWorkspaceBinding),
   projectContexts: Schema.optional(Schema.Array(GarrsProjectContext)),
@@ -412,6 +413,8 @@ export const GarrsTask = Schema.Struct({
   /** Bumped when the task is retried, reassigned or cancelled; stale attempts carry older ones. */
   generation: NonNegativeInt,
   attemptCount: NonNegativeInt,
+  /** Only an explicit task retry resets the attempt budget; continuation preserves it. */
+  attemptLimitGeneration: Schema.optional(NonNegativeInt),
   /** A user reassignment or coordinator choice; applies to every later attempt of this task. */
   pinnedSelection: Schema.NullOr(ModelSelection),
   pinnedBy: Schema.NullOr(Schema.Literals(["user", "coordinator"])),
@@ -568,6 +571,20 @@ export const GarrsWorkspaceState = Schema.Struct({
 });
 export type GarrsWorkspaceState = typeof GarrsWorkspaceState.Type;
 
+export const GarrsVerificationCheck = Schema.Struct({
+  name: Label,
+  status: Schema.Literals(["passed", "failed", "blocked", "not_run"]),
+  evidence: ShortText,
+});
+export type GarrsVerificationCheck = typeof GarrsVerificationCheck.Type;
+
+export const GarrsPreparationCheck = Schema.Struct({
+  projectId: ProjectId,
+  status: Schema.Literals(["ready", "attention", "unknown"]),
+  message: ShortText,
+});
+export type GarrsPreparationCheck = typeof GarrsPreparationCheck.Type;
+
 export const GarrsArtifact = Schema.Struct({
   id: GarrsArtifactId,
   workItemId: GarrsWorkItemId,
@@ -578,6 +595,7 @@ export const GarrsArtifact = Schema.Struct({
   summary: ShortText,
   body: LongText,
   evidence: TextList,
+  verification: Schema.optional(Schema.Array(GarrsVerificationCheck).check(Schema.isMaxLength(20))),
   contentHash: TrimmedNonEmptyString,
   workspace: Schema.NullOr(GarrsWorkspaceState),
   createdAt: IsoDateTime,
@@ -652,6 +670,7 @@ export const GarrsWorkItemDetail = Schema.Struct({
   activity: Schema.Array(GarrsActivity),
   /** What still blocks delivery, computed by the server. Empty when delivery is allowed. */
   remaining: TextList,
+  preparation: Schema.optional(Schema.Array(GarrsPreparationCheck)),
 });
 export type GarrsWorkItemDetail = typeof GarrsWorkItemDetail.Type;
 
@@ -1001,6 +1020,7 @@ export const GarrsReportInput = Schema.Struct({
   evidence: TextList.annotate({
     description: "Commands run with their results, files read, test names. Only what you did.",
   }),
+  verification: Schema.optional(Schema.Array(GarrsVerificationCheck).check(Schema.isMaxLength(20))),
   question: Schema.optional(ShortText),
 });
 export type GarrsReportInput = typeof GarrsReportInput.Type;

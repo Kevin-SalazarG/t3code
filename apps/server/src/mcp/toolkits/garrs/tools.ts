@@ -12,6 +12,7 @@ export const GARRS_TOOL_ACTIONS = [
   "select_model",
   "start_work",
   "revise",
+  "resume",
   "deliver",
   "submit_plan",
   "report",

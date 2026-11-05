@@ -1,3 +1,4 @@
+import { applyRunEnded, applyRunStarted } from "./GarrsAttempts.ts";
 import {
   CommandId,
   GarrsAgentStatus,
@@ -85,13 +86,13 @@ import * as Commit from "./GarrsCommit.ts";
 import * as Push from "./GarrsPush.ts";
 import * as Checkout from "./GarrsCheckout.ts";
 import * as TurnSafety from "./GarrsTurnSafety.ts";
+import * as Preparation from "./GarrsPreparation.ts";
 import {
   type Decision,
   GarrsRejection,
   type GarrsEffect,
   type WorkAggregate,
   agentStatuses,
-  applyRunEnded,
   currentAttempt,
   deliveryBlockers,
   GIT_OPERATION_UNAVAILABLE,
@@ -261,6 +262,10 @@ export class GarrsService extends Context.Service<
     readonly selectTaskModel: (
       caller: GarrsCaller,
       input: GarrsSelectModelInput,
+    ) => Effect.Effect<GarrsToolResult, GarrsError>;
+    readonly resume: (
+      caller: GarrsCaller,
+      input: GarrsStatusInput & { readonly workItemId: GarrsWorkItemId },
     ) => Effect.Effect<GarrsToolResult, GarrsError>;
     readonly revise: (
       caller: GarrsCaller,
@@ -904,6 +909,26 @@ const make = Effect.gen(function* () {
       reviews: invalidateStaleReviews(aggregate, subject.hash).aggregate.reviews,
       activity,
       remaining,
+      preparation: (yield* Effect.forEach(
+        [
+          {
+            projectId: aggregate.workItem.projectId,
+            checkout:
+              aggregate.workItem.access === "write"
+                ? (aggregate.workItem.workspace?.checkoutPath ?? null)
+                : (aggregate.workItem.projectRoot ??
+                  (yield* workspaceRoot(aggregate.workItem.projectId).pipe(
+                    Effect.orElseSucceed(() => null),
+                  ))),
+          },
+          ...(aggregate.workItem.projectContexts ?? []).map((context) => ({
+            projectId: context.projectId,
+            checkout: context.workspace.checkoutPath,
+          })),
+        ],
+        (entry) =>
+          Preparation.inspect(entry.projectId, entry.checkout).pipe(Effect.provide(subjectContext)),
+      )).flat(),
     } satisfies GarrsWorkItemDetail;
   }, Effect.mapError(toGarrsError));
 
@@ -1845,6 +1870,21 @@ const make = Effect.gen(function* () {
       status: next.workItem.status,
     });
 
+  const resume = Effect.fn("GarrsService.resume")(function* (
+    caller: GarrsCaller,
+    input: { readonly workItemId: GarrsWorkItemId },
+  ) {
+    yield* requireGarras(caller);
+    return yield* mutate(input.workItemId, null, (aggregate) =>
+      Effect.gen(function* () {
+        yield* garrasOwns(aggregate.workItem, caller);
+        const now = yield* nowIso;
+        const decision = yield* pure(() => Decider.control(aggregate, { type: "resume" }, now));
+        return { ...decision, result: toolResult(decision.effect) };
+      }),
+    );
+  }, Effect.mapError(toGarrsError));
+
   const revise = Effect.fn("GarrsService.revise")(function* (
     caller: GarrsCaller,
     input: GarrsReviseInput,
@@ -2450,7 +2490,7 @@ const make = Effect.gen(function* () {
   ) {
     const attempt = yield* requireAttempt(caller);
     const artifactId = GarrsArtifactId.make(yield* uuid);
-    const contentHash = yield* sha256(`${input.summary}\0${input.body}`);
+    const contentHash = yield* sha256(yield* unknownJson.encode(input));
     return yield* mutate(attempt.workItemId, null, (aggregate) =>
       Effect.gen(function* () {
         const next = yield* captureCheckout(aggregate, attempt.id, caller.threadId);
@@ -3061,15 +3101,21 @@ const make = Effect.gen(function* () {
       creationSource: "server",
     });
 
-  const stopThread = (threadId: ThreadId, attemptId: GarrsAttemptId) =>
-    threads
-      .dispatch({
-        type: "thread.stop",
-        commandId: CommandId.make(`garrs:stop:${attemptId}`),
-        threadId,
-        reason: "Stopped by Garrs.",
-      })
-      .pipe(Effect.asVoid);
+  const stopThread = Effect.fn("GarrsService.stopThread")(function* (
+    threadId: ThreadId,
+    attemptId: GarrsAttemptId,
+  ) {
+    yield* threads.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make(`garrs:stop:${attemptId}`),
+      threadId,
+      reason: "Stopped by Garrs.",
+    });
+    const projection = yield* threads.getThreadProjection(threadId);
+    const run = ThreadManagement.latestRun(projection);
+    if (run === undefined || ThreadManagement.isTerminalRunStatus(run.status))
+      yield* onRunEnded(threadId, run?.status ?? "cancelled", run?.id);
+  });
 
   const launchAttempt = Effect.fn("GarrsService.launchAttempt")(function* (
     attemptId: GarrsAttemptId,
@@ -4068,6 +4114,33 @@ const make = Effect.gen(function* () {
 
   // ── Run-end reactor ──────────────────────────────────────────────────────
 
+  const onRunStarted = Effect.fn("GarrsService.onRunStarted")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+    userMessageId: MessageId | null,
+  ) {
+    const attempt = yield* store.findAttemptByThread(threadId);
+    if (attempt === null || attempt.runId === runId) return;
+    yield* mutate(attempt.workItemId, null, (aggregate) =>
+      Effect.gen(function* () {
+        const task = aggregate.tasks.find((task) => task.id === attempt.taskId);
+        const projection =
+          task?.status === "waiting_response" && userMessageId !== null
+            ? yield* threads.getThreadProjection(threadId).pipe(Effect.orElseSucceed(() => null))
+            : null;
+        const humanResponse =
+          projection?.messages.some(
+            (message) => message.id === userMessageId && message.createdBy === "user",
+          ) ?? false;
+        const now = yield* nowIso;
+        return {
+          ...applyRunStarted(aggregate, { attemptId: attempt.id, runId, now, humanResponse }),
+          result: () => undefined,
+        };
+      }),
+    );
+  });
+
   const onRunEnded = Effect.fn("GarrsService.onRunEnded")(function* (
     threadId: ThreadId,
     runStatus: string,
@@ -4161,6 +4234,17 @@ const make = Effect.gen(function* () {
       );
     }
     for (const attempt of active) {
+      if (attempt.status === "cancel_requested" && attempt.threadId !== null) {
+        const projection = yield* threads
+          .getThreadProjection(attempt.threadId)
+          .pipe(Effect.orElseSucceed(() => null));
+        const run = projection === null ? undefined : ThreadManagement.latestRun(projection);
+        if (
+          projection !== null &&
+          (run === undefined || ThreadManagement.isTerminalRunStatus(run.status))
+        )
+          yield* onRunEnded(attempt.threadId, run?.status ?? "cancelled", run?.id);
+      }
       if (attempt.status !== "running" || attempt.startedAt === null) continue;
       const aggregate = yield* store.loadAggregate(attempt.workItemId);
       if (aggregate === null) continue;
@@ -4210,14 +4294,17 @@ const make = Effect.gen(function* () {
     yield* forkParked(
       Stream.runForEach(threads.streamDomainEvents, (event) =>
         event.type === "run.updated" &&
-        ThreadManagement.isTerminalRunStatus(event.payload.status) &&
         (event.threadId.startsWith(ATTEMPT_THREAD_PREFIX) || event.threadId.startsWith("garras:"))
-          ? (event.threadId.startsWith("garras:")
-              ? onGarrasRunEnded(event.threadId, event.payload.id)
-              : onRunEnded(event.threadId, event.payload.status, event.payload.id)
+          ? (ThreadManagement.isTerminalRunStatus(event.payload.status)
+              ? event.threadId.startsWith("garras:")
+                ? onGarrasRunEnded(event.threadId, event.payload.id)
+                : onRunEnded(event.threadId, event.payload.status, event.payload.id)
+              : event.threadId.startsWith(ATTEMPT_THREAD_PREFIX)
+                ? onRunStarted(event.threadId, event.payload.id, event.payload.userMessageId)
+                : Effect.void
             ).pipe(
               Effect.catchCause((cause) =>
-                Effect.logWarning("Garrs run-end handling failed", { cause: Cause.pretty(cause) }),
+                Effect.logWarning("Garrs run handling failed", { cause: Cause.pretty(cause) }),
               ),
             )
           : Effect.void,
@@ -4249,6 +4336,7 @@ const make = Effect.gen(function* () {
     status,
     models,
     selectTaskModel,
+    resume,
     revise,
     deliver,
     submitPlan,
