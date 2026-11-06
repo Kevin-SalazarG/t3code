@@ -30,15 +30,15 @@ describe("V2 preview upgrade", () => {
   it.effect("adds Garrs after the published schema without changing its migration history", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 79 });
+      yield* runMigrations({ toMigrationInclusive: 80 });
       const history = yield* sql`
         SELECT migration_id, name, created_at FROM effect_sql_migrations ORDER BY migration_id
       `;
-      assert.deepStrictEqual(yield* runMigrations(), [[80, "GarrsCore"]]);
+      assert.deepStrictEqual(yield* runMigrations(), [[81, "ScheduledTaskThreadMode"]]);
       assert.deepStrictEqual(
         yield* sql`
           SELECT migration_id, name, created_at FROM effect_sql_migrations
-          WHERE migration_id <= 79 ORDER BY migration_id
+          WHERE migration_id <= 80 ORDER BY migration_id
         `,
         history,
       );
@@ -83,6 +83,7 @@ describe("V2 preview upgrade", () => {
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
         [80, "GarrsCore"],
+        [81, "ScheduledTaskThreadMode"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -186,6 +187,7 @@ describe("V2 preview upgrade", () => {
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
         [80, "GarrsCore"],
+        [81, "ScheduledTaskThreadMode"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
