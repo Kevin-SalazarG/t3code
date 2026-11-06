@@ -266,12 +266,12 @@ const SETTINGS_SCREENS = {
   SettingsGarrs: createNativeStackScreen({
     screen: GarrsProjectRouteScreen,
     linking: "settings/garrs/:environmentId/:projectId",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Garrs" },
+    options: settingsPage("Garrs"),
   }),
   SettingsGarrsWorkItem: createNativeStackScreen({
     screen: GarrsWorkItemRouteScreen,
     linking: "settings/garrs/:environmentId/:projectId/work/:workItemId",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Work item" },
+    options: settingsPage("Work item"),
   }),
   SettingsKeyboard: createNativeStackScreen({
     screen: SettingsKeyboardRouteScreen,

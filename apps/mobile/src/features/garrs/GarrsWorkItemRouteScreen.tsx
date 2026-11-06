@@ -26,7 +26,7 @@ import { garrsEnvironment } from "../../state/garrs";
 import { useEnvironmentQuery } from "../../state/query";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import {
   canRetryTask,
   canStopAttempt,
