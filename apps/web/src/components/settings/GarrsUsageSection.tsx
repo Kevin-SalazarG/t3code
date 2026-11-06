@@ -327,7 +327,7 @@ export function GarrsUsageSection({
       </SettingsRow>
       <SettingsRow
         title="Garras conversations"
-        description="One row per Garras conversation run. These runs cannot be reliably assigned to an individual work item. The filters above apply to both tables. Native provider estimates and standard-price estimates are separate; subscription charges remain unknown."
+        description="Each row is a conversation run; work-item attribution is unavailable. Filters apply to both tables. Provider and standard-price estimates are separate; subscription charges are unknown."
         control={
           <>
             <Button

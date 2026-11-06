@@ -326,7 +326,7 @@ function GarrsTeamConfigSection({
           />
           <SettingsRow
             title="How Garras chooses models"
-            description="Garras chooses an available account and model for each task. Model lists below are optional. Use this guidance for preferences such as choosing Claude for visual work; project restrictions still apply."
+            description="Garras chooses an available account and model for each task. Model lists are optional. Set preferences such as Claude for visual work; project restrictions still apply."
           >
             <div className="pb-3">
               <Textarea
