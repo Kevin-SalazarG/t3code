@@ -375,7 +375,9 @@ const make = Effect.gen(function* () {
                   ],
                   {
                     cwd: project.workspaceRoot,
+                    extendEnv: true,
                     env: {
+                      GH_DEBUG: "",
                       GH_TOKEN: "",
                       GITHUB_TOKEN: "",
                       GH_BROWSER: "false",

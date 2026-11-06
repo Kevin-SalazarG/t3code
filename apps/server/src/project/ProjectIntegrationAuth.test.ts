@@ -1,4 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProjectId } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -9,7 +10,7 @@ import * as Fiber from "effect/Fiber";
 import * as SourceControlSignIn from "../sourceControl/SourceControlSignIn.ts";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as Settings from "../serverSettings.ts";
@@ -21,7 +22,11 @@ const projectId = ProjectId.make("oauth-project");
 const redirectUri = "http://localhost:3773/api/project-integrations/oauth/callback";
 
 const setup = (
-  options: { readonly beforeToken?: Effect.Effect<void>; readonly githubApp?: boolean } = {},
+  options: {
+    readonly beforeToken?: Effect.Effect<void>;
+    readonly githubApp?: boolean;
+    readonly cliSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
+  } = {},
 ) => {
   const requests: Array<{ path: string; body: string; authorization: string | undefined }> = [];
   let exchanges = 0;
@@ -80,8 +85,19 @@ const setup = (
             : []),
           Layer.succeed(HttpClient.HttpClient, http),
           Layer.succeed(HostProcess.Environment, {}),
-          Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({}),
-          Layer.mock(VcsProcess.VcsProcess)({}),
+          options.cliSpawner === undefined
+            ? Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({})
+            : Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, options.cliSpawner),
+          Layer.mock(VcsProcess.VcsProcess)({
+            run: () =>
+              Effect.succeed({
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: "private-github-access",
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              }),
+          }),
           Layer.mock(SecretResolver.SecretResolver)({ read: () => Effect.succeed([]) }),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: (id) =>
@@ -261,22 +277,41 @@ it.effect("does not save a cancelled session when the code exchange finishes aft
   }),
 );
 
-it.effect(
-  "reuses GitHub's existing sign-in and keeps the account ready for repository selection",
-  () => {
-    const fixture = setup({ githubApp: true });
-    return Effect.gen(function* () {
-      const auth = yield* Auth.ProjectIntegrationAuth;
-      const settings = yield* Settings.ServerSettingsService;
-      const prompt = yield* auth.start({ projectId, provider: "github", redirectUri });
-      expect(prompt.userCode).toBe("TEST-CODE");
-      yield* auth.wait({ projectId, id: prompt.id });
-      const github = (yield* settings.getSettings).projectIntegrations[projectId]?.github;
-      expect(github?.account).toBe("project-account");
-      expect(github?.repository).toBeNull();
-      expect(github?.accessToken).toBe("");
-      expect(github?.oauthSession).toContain("private-github-refresh");
-      expect(yield* auth.accessToken(projectId, "github")).toBe("private-github-access");
-    }).pipe(Effect.provide(fixture.layer));
-  },
+it.live.each(["app", "cli"] as const)(
+  "signs in through GitHub %s and keeps the account ready for repository selection",
+  (provider) =>
+    Effect.gen(function* () {
+      const nativeSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const executable = yield* HostProcess.ExecutablePath;
+      const cliSpawner = ChildProcessSpawner.make((command) =>
+        command._tag === "PipedCommand"
+          ? nativeSpawner.spawn(command)
+          : nativeSpawner.spawn(
+              ChildProcess.make(
+                executable,
+                [
+                  "--eval",
+                  `if (!process.env.PATH || process.env.GH_TOKEN !== '' || process.env.GITHUB_TOKEN !== '') process.exit(1);
+process.stderr.write('First copy your one-time code: TEST-CODE\\n');`,
+                ],
+                { ...command.options, cwd: undefined },
+              ),
+            ),
+      );
+      const fixture = setup({ githubApp: provider === "app", cliSpawner });
+      return yield* Effect.gen(function* () {
+        const auth = yield* Auth.ProjectIntegrationAuth;
+        const settings = yield* Settings.ServerSettingsService;
+        const prompt = yield* auth.start({ projectId, provider: "github", redirectUri });
+        expect(prompt.userCode).toBe("TEST-CODE");
+        yield* auth.wait({ projectId, id: prompt.id });
+        const github = (yield* settings.getSettings).projectIntegrations[projectId]?.github;
+        expect(github?.account).toBe("project-account");
+        expect(github?.repository).toBeNull();
+        expect(github?.accessToken).toBe(provider === "app" ? "" : "private-github-access");
+        if (provider === "app") expect(github?.oauthSession).toContain("private-github-refresh");
+        else expect(github?.oauthSession).toBeUndefined();
+        expect(yield* auth.accessToken(projectId, "github")).toBe("private-github-access");
+      }).pipe(Effect.provide(fixture.layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
